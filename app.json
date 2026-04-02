@@ -1,0 +1,90 @@
+{
+  "expo": {
+    "name": "JambGenius",
+    "slug": "jambmobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "scheme": "jambgenius",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a56db"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jambgenius.mobile",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "JambGenius needs camera access for profile photos and document scanning.",
+        "NSMicrophoneUsageDescription": "JambGenius needs microphone access for audio features and recordings.",
+        "NSPhotoLibraryUsageDescription": "JambGenius needs photo library access to upload study materials and profile images.",
+        "NSPhotoLibraryAddUsageDescription": "JambGenius needs permission to save images to your photo library.",
+        "NSAppTransportSecurity": {
+          "NSExceptionDomains": {
+            "jambgenius.app": {
+              "NSExceptionAllowsInsecureHTTPLoads": false,
+              "NSIncludesSubdomains": true
+            }
+          }
+        }
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a56db"
+      },
+      "package": "com.jambgenius.mobile",
+      "versionCode": 1,
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "READ_MEDIA_AUDIO",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "JambGenius needs camera access for profile photos and document scanning.",
+          "microphonePermission": "JambGenius needs microphone access for audio features and recordings.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "JambGenius needs microphone access for audio features and recordings."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "JambGenius needs photo library access to upload study materials.",
+          "savePhotosPermission": "JambGenius needs permission to save images to your photo library.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      "expo-splash-screen"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "your-eas-project-id"
+      }
+    }
+  }
+}
