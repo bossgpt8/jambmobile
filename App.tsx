@@ -8,7 +8,6 @@ import {
   Platform,
   Linking,
   SafeAreaView,
-  ActivityIndicator,
 } from 'react-native';
 import { WebView, WebViewNavigation } from 'react-native-webview';
 import * as SplashScreen from 'expo-splash-screen';
@@ -37,7 +36,6 @@ function isAllowedHost(url: string): boolean {
 export default function App() {
   const webViewRef = useRef<WebView>(null);
   const [canGoBack, setCanGoBack] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [isError, setIsError] = useState(false);
   const [appReady, setAppReady] = useState(false);
 
@@ -107,7 +105,6 @@ export default function App() {
 
   const handleReload = useCallback(() => {
     setIsError(false);
-    setLoading(true);
     webViewRef.current?.reload();
   }, []);
 
@@ -149,13 +146,7 @@ export default function App() {
             style={styles.webView}
             onNavigationStateChange={handleNavigationStateChange}
             onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
-            onLoadStart={() => {
-              setLoading(true);
-              setIsError(false);
-            }}
-            onLoadEnd={() => setLoading(false)}
             onError={() => {
-              setLoading(false);
               setIsError(true);
             }}
             onHttpError={(syntheticEvent) => {
@@ -180,22 +171,19 @@ export default function App() {
             geolocationEnabled
             // Zoom
             scalesPageToFit={Platform.OS === 'android'}
-            // User agent - keep default so site detects mobile browser correctly
-            applicationNameForUserAgent="JambGeniusApp/1.0"
+            // Use a standard mobile browser user agent so Google Sign-In / Firebase
+            // does not block the request (WebView "wv" marker removed)
+            userAgent={
+              Platform.OS === 'android'
+                ? 'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+                : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+            }
             // Pull-to-refresh behaviour
             bounces={false}
             overScrollMode="never"
           />
         ) : (
           <ErrorScreen onRetry={handleReload} />
-        )}
-
-        {/* Loading overlay */}
-        {loading && !isError && (
-          <View style={styles.loadingOverlay} pointerEvents="none">
-            <ActivityIndicator size="large" color={BRAND_COLOR} />
-            <Text style={styles.loadingText}>Loading JambGenius…</Text>
-          </View>
         )}
       </View>
     </SafeAreaView>
@@ -280,18 +268,6 @@ const styles = StyleSheet.create({
   },
   webView: {
     flex: 1,
-  },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#ffffff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  loadingText: {
-    marginTop: 12,
-    color: BRAND_COLOR,
-    fontSize: 15,
-    fontWeight: '500',
   },
   errorContainer: {
     flex: 1,
