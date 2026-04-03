@@ -3,6 +3,7 @@ import {
   StyleSheet,
   View,
   Text,
+  Image,
   TouchableOpacity,
   BackHandler,
   Platform,
@@ -10,6 +11,7 @@ import {
   SafeAreaView,
 } from 'react-native';
 import { WebView, WebViewNavigation } from 'react-native-webview';
+import NetInfo from '@react-native-community/netinfo';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 
@@ -35,9 +37,13 @@ function isAllowedHost(url: string): boolean {
 
 export default function App() {
   const webViewRef = useRef<WebView>(null);
+  const previousConnectedRef = useRef<boolean | null>(null);
+  const backOnlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [isError, setIsError] = useState(false);
   const [appReady, setAppReady] = useState(false);
+  const [isConnected, setIsConnected] = useState(true);
+  const [showBackOnline, setShowBackOnline] = useState(false);
 
   // Hide the native splash screen once the component is mounted
   useEffect(() => {
@@ -51,6 +57,51 @@ export default function App() {
       }
     }
     prepare();
+  }, []);
+
+  // Keep track of connectivity so we can show an offline screen immediately
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsConnected(Boolean(state.isConnected) && state.isInternetReachable !== false);
+    });
+
+    NetInfo.fetch().then((state) => {
+      setIsConnected(Boolean(state.isConnected) && state.isInternetReachable !== false);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  // Show a small confirmation banner when connection is restored
+  useEffect(() => {
+    const previous = previousConnectedRef.current;
+
+    if (previous === false && isConnected) {
+      setShowBackOnline(true);
+      setIsError(false);
+      webViewRef.current?.reload();
+
+      if (backOnlineTimerRef.current) {
+        clearTimeout(backOnlineTimerRef.current);
+      }
+      backOnlineTimerRef.current = setTimeout(() => {
+        setShowBackOnline(false);
+      }, 2500);
+    }
+
+    if (previous === true && !isConnected) {
+      setShowBackOnline(false);
+    }
+
+    previousConnectedRef.current = isConnected;
+  }, [isConnected]);
+
+  useEffect(() => {
+    return () => {
+      if (backOnlineTimerRef.current) {
+        clearTimeout(backOnlineTimerRef.current);
+      }
+    };
   }, []);
 
   // Android hardware back button
@@ -103,7 +154,14 @@ export default function App() {
     []
   );
 
-  const handleReload = useCallback(() => {
+  const handleReload = useCallback(async () => {
+    const state = await NetInfo.fetch();
+    const connected =
+      Boolean(state.isConnected) && state.isInternetReachable !== false;
+    setIsConnected(connected);
+    if (!connected) {
+      return;
+    }
     setIsError(false);
     webViewRef.current?.reload();
   }, []);
@@ -115,6 +173,8 @@ export default function App() {
   if (!appReady) {
     return null;
   }
+
+  const shouldShowOffline = !isConnected;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -139,11 +199,13 @@ export default function App() {
 
       {/* WebView */}
       <View style={styles.webViewContainer}>
-        {!isError ? (
+        {!isError && !shouldShowOffline ? (
           <WebView
             ref={webViewRef}
             source={{ uri: APP_URL }}
             style={styles.webView}
+            cacheEnabled
+            cacheMode={isConnected ? 'LOAD_DEFAULT' : 'LOAD_CACHE_ELSE_NETWORK'}
             onNavigationStateChange={handleNavigationStateChange}
             onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
             onError={() => {
@@ -183,7 +245,13 @@ export default function App() {
             overScrollMode="never"
           />
         ) : (
-          <ErrorScreen onRetry={handleReload} />
+          <ErrorScreen onRetry={handleReload} isOffline={shouldShowOffline} />
+        )}
+
+        {showBackOnline && (
+          <View style={styles.backOnlineBanner}>
+            <Text style={styles.backOnlineBannerText}>Back online</Text>
+          </View>
         )}
       </View>
     </SafeAreaView>
@@ -195,16 +263,22 @@ export default function App() {
 // ---------------------------------------------------------------------------
 interface ErrorScreenProps {
   onRetry: () => void;
+  isOffline: boolean;
 }
 
-function ErrorScreen({ onRetry }: ErrorScreenProps) {
+function ErrorScreen({ onRetry, isOffline }: ErrorScreenProps) {
   return (
     <View style={styles.errorContainer}>
-      <Text style={styles.errorIcon}>📡</Text>
-      <Text style={styles.errorTitle}>No Connection</Text>
+      <Image
+        source={require('./assets/offline.png')}
+        style={styles.errorImage}
+        resizeMode="contain"
+      />
+      <Text style={styles.errorTitle}>{isOffline ? 'No Connection' : 'Something went wrong'}</Text>
       <Text style={styles.errorMessage}>
-        We couldn't load JambGenius. Please check your internet connection and
-        try again.
+        {isOffline
+          ? "You are offline or your connection dropped. Please check your internet and try again."
+          : "We couldn't load JambGenius right now. Please try again."}
       </Text>
       <TouchableOpacity
         style={styles.retryButton}
@@ -276,8 +350,9 @@ const styles = StyleSheet.create({
     padding: 32,
     backgroundColor: '#f9fafb',
   },
-  errorIcon: {
-    fontSize: 60,
+  errorImage: {
+    width: 120,
+    height: 120,
     marginBottom: 20,
   },
   errorTitle: {
@@ -303,5 +378,25 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  backOnlineBanner: {
+    position: 'absolute',
+    top: 14,
+    alignSelf: 'center',
+    backgroundColor: '#0f766e',
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  backOnlineBannerText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
 });
