@@ -11,8 +11,9 @@ import {
   SafeAreaView,
   Alert,
 } from 'react-native';
-import { WebView, WebViewNavigation } from 'react-native-webview';
+import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
 import NetInfo from '@react-native-community/netinfo';
+import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 
@@ -190,6 +191,89 @@ export default function App() {
     webViewRef.current?.goBack();
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // Clipboard image paste bridge
+  // ---------------------------------------------------------------------------
+
+  // Injected before page content loads: intercepts paste events and forwards
+  // them to the React Native layer so we can read clipboard images natively.
+  const PASTE_INTERCEPT_JS = `
+    (function () {
+      document.addEventListener('paste', function (e) {
+        // If the browser already has clipboard image data, let it through.
+        var items = e.clipboardData && e.clipboardData.items;
+        var hasImage = false;
+        if (items) {
+          for (var i = 0; i < items.length; i++) {
+            if (items[i].type.indexOf('image') !== -1) {
+              hasImage = true;
+              break;
+            }
+          }
+        }
+        if (!hasImage) {
+          // No image in the web-side clipboard — ask the native layer.
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'PASTE_REQUEST' }));
+        }
+      }, true);
+      true;
+    })();
+  `;
+
+  // Called when the WebView posts a message.
+  const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
+    let msg: { type: string } | null = null;
+    try {
+      msg = JSON.parse(event.nativeEvent.data);
+    } catch {
+      return;
+    }
+
+    if (msg?.type !== 'PASTE_REQUEST') return;
+
+    // Try to get a PNG image from the native clipboard.
+    const base64 = await Clipboard.getImageAsync({ format: 'png' })
+      .then((r) => r?.data ?? null)
+      .catch((err) => {
+        console.warn('[PasteBridge] clipboard read failed:', err);
+        return null;
+      });
+
+    if (!base64) return;
+
+    // Inject a synthetic paste event carrying the image as a File object.
+    const injectScript = `
+      (function () {
+        try {
+          var b64 = ${JSON.stringify(base64)};
+          var byteChars = atob(b64);
+          var byteNums = new Array(byteChars.length);
+          for (var i = 0; i < byteChars.length; i++) {
+            byteNums[i] = byteChars.charCodeAt(i);
+          }
+          var byteArray = new Uint8Array(byteNums);
+          var blob = new Blob([byteArray], { type: 'image/png' });
+          var file = new File([blob], 'pasted-image.png', { type: 'image/png' });
+
+          var dt = new DataTransfer();
+          dt.items.add(file);
+
+          var target = document.activeElement || document.body;
+          var pasteEvent = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: dt,
+          });
+          target.dispatchEvent(pasteEvent);
+        } catch (err) {
+          console.warn('RN paste bridge error:', err);
+        }
+      })();
+      true;
+    `;
+    webViewRef.current?.injectJavaScript(injectScript);
+  }, []);
+
   if (!appReady) {
     return (
       <View style={styles.splashContainer}>
@@ -281,6 +365,9 @@ export default function App() {
             // Pull-to-refresh behaviour
             bounces={false}
             overScrollMode="never"
+            // Clipboard image paste bridge
+            injectedJavaScriptBeforeContentLoaded={PASTE_INTERCEPT_JS}
+            onMessage={handleMessage}
           />
         ) : (
           <ErrorScreen onRetry={handleReload} isOffline={shouldShowOffline} />

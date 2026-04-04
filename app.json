@@ -50,7 +50,8 @@
         "READ_MEDIA_VIDEO",
         "READ_MEDIA_AUDIO",
         "INTERNET",
-        "ACCESS_NETWORK_STATE"
+        "ACCESS_NETWORK_STATE",
+        "READ_CLIPBOARD"
       ]
     },
     "web": {
@@ -79,7 +80,8 @@
           "isAccessMediaLocationEnabled": true
         }
       ],
-      "expo-splash-screen"
+      "expo-splash-screen",
+      "expo-clipboard"
     ],
     "extra": {
       "eas": {
