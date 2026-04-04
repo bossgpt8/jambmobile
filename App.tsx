@@ -23,6 +23,7 @@ SplashScreen.preventAutoHideAsync();
 const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
 const SPLASH_DURATION_MS = 7000;
+const CONNECTIVITY_TIMEOUT_MS = 5000;
 
 // Hosts allowed to open inside the WebView
 const ALLOWED_HOSTS = ['jambgenius.app', 'www.jambgenius.app'];
@@ -42,7 +43,7 @@ function isAllowedHost(url: string): boolean {
 async function checkConnectivity(): Promise<boolean> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), CONNECTIVITY_TIMEOUT_MS);
     await fetch(APP_URL, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
     clearTimeout(timeoutId);
     return true;
