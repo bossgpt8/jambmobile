@@ -18,6 +18,11 @@ ios/
 *.jsbundle
 *.map
 
+# Sensitive config files (never commit — injected via GitHub secrets)
+google-services.json
+*.keystore
+*.jks
+
 # Environment variables
 .env
 .env.local
