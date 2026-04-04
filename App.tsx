@@ -10,9 +10,9 @@ import {
   Linking,
   SafeAreaView,
   Alert,
+  AppState,
 } from 'react-native';
 import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
-import NetInfo from '@react-native-community/netinfo';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
@@ -33,6 +33,19 @@ function isAllowedHost(url: string): boolean {
     return ALLOWED_HOSTS.some(
       (host) => hostname === host || hostname.endsWith('.' + host)
     );
+  } catch {
+    return false;
+  }
+}
+
+// Lightweight connectivity check — no native module required
+async function checkConnectivity(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    await fetch(APP_URL, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
+    clearTimeout(timeoutId);
+    return true;
   } catch {
     return false;
   }
@@ -64,15 +77,40 @@ export default function App() {
 
   // Keep track of connectivity so we can show an offline screen immediately
   useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      setIsConnected(Boolean(state.isConnected) && state.isInternetReachable !== false);
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+    const updateConnectivity = async () => {
+      const connected = await checkConnectivity();
+      setIsConnected(connected);
+    };
+
+    const startPolling = () => {
+      pollInterval = setInterval(updateConnectivity, 10000);
+    };
+
+    const stopPolling = () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    };
+
+    updateConnectivity();
+    startPolling();
+
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        updateConnectivity();
+        startPolling();
+      } else {
+        stopPolling();
+      }
     });
 
-    NetInfo.fetch().then((state) => {
-      setIsConnected(Boolean(state.isConnected) && state.isInternetReachable !== false);
-    });
-
-    return unsubscribe;
+    return () => {
+      stopPolling();
+      appStateSubscription.remove();
+    };
   }, []);
 
   // Show a small confirmation banner when connection is restored
@@ -176,9 +214,7 @@ export default function App() {
   );
 
   const handleReload = useCallback(async () => {
-    const state = await NetInfo.fetch();
-    const connected =
-      Boolean(state.isConnected) && state.isInternetReachable !== false;
+    const connected = await checkConnectivity();
     setIsConnected(connected);
     if (!connected) {
       return;
