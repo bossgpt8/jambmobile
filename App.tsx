@@ -9,9 +9,11 @@ import {
   Platform,
   Linking,
   SafeAreaView,
+  Alert,
+  AppState,
 } from 'react-native';
-import { WebView, WebViewNavigation } from 'react-native-webview';
-import NetInfo from '@react-native-community/netinfo';
+import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
+import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 
@@ -20,6 +22,8 @@ SplashScreen.preventAutoHideAsync();
 
 const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
+const SPLASH_DURATION_MS = 7000;
+const CONNECTIVITY_TIMEOUT_MS = 5000;
 
 // Hosts allowed to open inside the WebView
 const ALLOWED_HOSTS = ['jambgenius.app', 'www.jambgenius.app'];
@@ -30,6 +34,19 @@ function isAllowedHost(url: string): boolean {
     return ALLOWED_HOSTS.some(
       (host) => hostname === host || hostname.endsWith('.' + host)
     );
+  } catch {
+    return false;
+  }
+}
+
+// Lightweight connectivity check — no native module required
+async function checkConnectivity(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CONNECTIVITY_TIMEOUT_MS);
+    await fetch(APP_URL, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
+    clearTimeout(timeoutId);
+    return true;
   } catch {
     return false;
   }
@@ -49,8 +66,8 @@ export default function App() {
   useEffect(() => {
     async function prepare() {
       try {
-        // Small pause to let the WebView start loading
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // Keep the splash visible for 7 seconds
+        await new Promise((resolve) => setTimeout(resolve, SPLASH_DURATION_MS));
       } finally {
         setAppReady(true);
         await SplashScreen.hideAsync();
@@ -61,15 +78,40 @@ export default function App() {
 
   // Keep track of connectivity so we can show an offline screen immediately
   useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      setIsConnected(Boolean(state.isConnected) && state.isInternetReachable !== false);
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+    const updateConnectivity = async () => {
+      const connected = await checkConnectivity();
+      setIsConnected(connected);
+    };
+
+    const startPolling = () => {
+      pollInterval = setInterval(updateConnectivity, 10000);
+    };
+
+    const stopPolling = () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    };
+
+    updateConnectivity();
+    startPolling();
+
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        updateConnectivity();
+        startPolling();
+      } else {
+        stopPolling();
+      }
     });
 
-    NetInfo.fetch().then((state) => {
-      setIsConnected(Boolean(state.isConnected) && state.isInternetReachable !== false);
-    });
-
-    return unsubscribe;
+    return () => {
+      stopPolling();
+      appStateSubscription.remove();
+    };
   }, []);
 
   // Show a small confirmation banner when connection is restored
@@ -104,6 +146,23 @@ export default function App() {
     };
   }, []);
 
+  // Exit app with confirmation dialog
+  const handleExit = useCallback(() => {
+    Alert.alert(
+      'Exit App',
+      'Are you sure you want to exit JambGenius?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit',
+          style: 'destructive',
+          onPress: () => BackHandler.exitApp(),
+        },
+      ],
+      { cancelable: true }
+    );
+  }, []);
+
   // Android hardware back button
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -112,14 +171,15 @@ export default function App() {
         webViewRef.current.goBack();
         return true;
       }
-      return false;
+      handleExit();
+      return true;
     };
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
       onBackPress
     );
     return () => subscription.remove();
-  }, [canGoBack]);
+  }, [canGoBack, handleExit]);
 
   const handleNavigationStateChange = useCallback(
     (navState: WebViewNavigation) => {
@@ -155,9 +215,7 @@ export default function App() {
   );
 
   const handleReload = useCallback(async () => {
-    const state = await NetInfo.fetch();
-    const connected =
-      Boolean(state.isConnected) && state.isInternetReachable !== false;
+    const connected = await checkConnectivity();
     setIsConnected(connected);
     if (!connected) {
       return;
@@ -170,8 +228,101 @@ export default function App() {
     webViewRef.current?.goBack();
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // Clipboard image paste bridge
+  // ---------------------------------------------------------------------------
+
+  // Injected before page content loads: intercepts paste events and forwards
+  // them to the React Native layer so we can read clipboard images natively.
+  const PASTE_INTERCEPT_JS = `
+    (function () {
+      document.addEventListener('paste', function (e) {
+        // If the browser already has clipboard image data, let it through.
+        var items = e.clipboardData && e.clipboardData.items;
+        var hasImage = false;
+        if (items) {
+          for (var i = 0; i < items.length; i++) {
+            if (items[i].type.indexOf('image') !== -1) {
+              hasImage = true;
+              break;
+            }
+          }
+        }
+        if (!hasImage) {
+          // No image in the web-side clipboard — ask the native layer.
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'PASTE_REQUEST' }));
+        }
+      }, true);
+      true;
+    })();
+  `;
+
+  // Called when the WebView posts a message.
+  const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
+    let msg: { type: string } | null = null;
+    try {
+      msg = JSON.parse(event.nativeEvent.data);
+    } catch {
+      return;
+    }
+
+    if (msg?.type !== 'PASTE_REQUEST') return;
+
+    // Try to get a PNG image from the native clipboard.
+    const base64 = await Clipboard.getImageAsync({ format: 'png' })
+      .then((r) => r?.data ?? null)
+      .catch((err) => {
+        console.warn('[PasteBridge] clipboard read failed:', err);
+        return null;
+      });
+
+    if (!base64) return;
+
+    // Inject a synthetic paste event carrying the image as a File object.
+    const injectScript = `
+      (function () {
+        try {
+          var b64 = ${JSON.stringify(base64)};
+          var byteChars = atob(b64);
+          var byteNums = new Array(byteChars.length);
+          for (var i = 0; i < byteChars.length; i++) {
+            byteNums[i] = byteChars.charCodeAt(i);
+          }
+          var byteArray = new Uint8Array(byteNums);
+          var blob = new Blob([byteArray], { type: 'image/png' });
+          var file = new File([blob], 'pasted-image.png', { type: 'image/png' });
+
+          var dt = new DataTransfer();
+          dt.items.add(file);
+
+          var target = document.activeElement || document.body;
+          var pasteEvent = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: dt,
+          });
+          target.dispatchEvent(pasteEvent);
+        } catch (err) {
+          console.warn('RN paste bridge error:', err);
+        }
+      })();
+      true;
+    `;
+    webViewRef.current?.injectJavaScript(injectScript);
+  }, []);
+
   if (!appReady) {
-    return null;
+    return (
+      <View style={styles.splashContainer}>
+        <ExpoStatusBar style="light" backgroundColor={BRAND_COLOR} />
+        <Image
+          source={require('./assets/splash.png')}
+          style={styles.splashImage}
+          resizeMode="cover"
+          fadeDuration={0}
+        />
+      </View>
+    );
   }
 
   const shouldShowOffline = !isConnected;
@@ -182,7 +333,7 @@ export default function App() {
 
       {/* Header */}
       <View style={styles.header}>
-        {canGoBack && (
+        {canGoBack ? (
           <TouchableOpacity
             style={styles.backButton}
             onPress={handleGoBack}
@@ -191,10 +342,18 @@ export default function App() {
           >
             <Text style={styles.backArrow}>‹</Text>
           </TouchableOpacity>
+        ) : (
+          <View style={styles.headerSpacer} />
         )}
         <Text style={styles.headerTitle}>JambGenius</Text>
-        {/* Spacer to centre title */}
-        {canGoBack && <View style={styles.headerSpacer} />}
+        <TouchableOpacity
+          style={styles.exitButton}
+          onPress={handleExit}
+          accessibilityLabel="Exit app"
+          accessibilityRole="button"
+        >
+          <Text style={styles.exitButtonText}>✕</Text>
+        </TouchableOpacity>
       </View>
 
       {/* WebView */}
@@ -243,6 +402,9 @@ export default function App() {
             // Pull-to-refresh behaviour
             bounces={false}
             overScrollMode="never"
+            // Clipboard image paste bridge
+            injectedJavaScriptBeforeContentLoaded={PASTE_INTERCEPT_JS}
+            onMessage={handleMessage}
           />
         ) : (
           <ErrorScreen onRetry={handleReload} isOffline={shouldShowOffline} />
@@ -296,6 +458,16 @@ function ErrorScreen({ onRetry, isOffline }: ErrorScreenProps) {
 // Styles
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
+  splashContainer: {
+    flex: 1,
+    backgroundColor: BRAND_COLOR,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  splashImage: {
+    width: '100%',
+    height: '100%',
+  },
   safeArea: {
     flex: 1,
     backgroundColor: BRAND_COLOR,
@@ -335,6 +507,18 @@ const styles = StyleSheet.create({
   },
   headerSpacer: {
     width: 36,
+  },
+  exitButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exitButtonText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '600',
+    lineHeight: 20,
   },
   webViewContainer: {
     flex: 1,
