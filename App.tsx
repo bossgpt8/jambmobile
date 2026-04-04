@@ -9,6 +9,7 @@ import {
   Platform,
   Linking,
   SafeAreaView,
+  Alert,
 } from 'react-native';
 import { WebView, WebViewNavigation } from 'react-native-webview';
 import NetInfo from '@react-native-community/netinfo';
@@ -20,6 +21,7 @@ SplashScreen.preventAutoHideAsync();
 
 const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
+const SPLASH_DURATION_MS = 7000;
 
 // Hosts allowed to open inside the WebView
 const ALLOWED_HOSTS = ['jambgenius.app', 'www.jambgenius.app'];
@@ -49,8 +51,8 @@ export default function App() {
   useEffect(() => {
     async function prepare() {
       try {
-        // Small pause to let the WebView start loading
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // Keep the splash visible for 7 seconds
+        await new Promise((resolve) => setTimeout(resolve, SPLASH_DURATION_MS));
       } finally {
         setAppReady(true);
         await SplashScreen.hideAsync();
@@ -104,6 +106,23 @@ export default function App() {
     };
   }, []);
 
+  // Exit app with confirmation dialog
+  const handleExit = useCallback(() => {
+    Alert.alert(
+      'Exit App',
+      'Are you sure you want to exit JambGenius?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit',
+          style: 'destructive',
+          onPress: () => BackHandler.exitApp(),
+        },
+      ],
+      { cancelable: true }
+    );
+  }, []);
+
   // Android hardware back button
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -112,14 +131,15 @@ export default function App() {
         webViewRef.current.goBack();
         return true;
       }
-      return false;
+      handleExit();
+      return true;
     };
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
       onBackPress
     );
     return () => subscription.remove();
-  }, [canGoBack]);
+  }, [canGoBack, handleExit]);
 
   const handleNavigationStateChange = useCallback(
     (navState: WebViewNavigation) => {
@@ -171,7 +191,17 @@ export default function App() {
   }, []);
 
   if (!appReady) {
-    return null;
+    return (
+      <View style={styles.splashContainer}>
+        <ExpoStatusBar style="light" backgroundColor={BRAND_COLOR} />
+        <Image
+          source={require('./assets/splash.png')}
+          style={styles.splashImage}
+          resizeMode="cover"
+          fadeDuration={0}
+        />
+      </View>
+    );
   }
 
   const shouldShowOffline = !isConnected;
@@ -182,7 +212,7 @@ export default function App() {
 
       {/* Header */}
       <View style={styles.header}>
-        {canGoBack && (
+        {canGoBack ? (
           <TouchableOpacity
             style={styles.backButton}
             onPress={handleGoBack}
@@ -191,10 +221,18 @@ export default function App() {
           >
             <Text style={styles.backArrow}>‹</Text>
           </TouchableOpacity>
+        ) : (
+          <View style={styles.headerSpacer} />
         )}
         <Text style={styles.headerTitle}>JambGenius</Text>
-        {/* Spacer to centre title */}
-        {canGoBack && <View style={styles.headerSpacer} />}
+        <TouchableOpacity
+          style={styles.exitButton}
+          onPress={handleExit}
+          accessibilityLabel="Exit app"
+          accessibilityRole="button"
+        >
+          <Text style={styles.exitButtonText}>✕</Text>
+        </TouchableOpacity>
       </View>
 
       {/* WebView */}
@@ -296,6 +334,16 @@ function ErrorScreen({ onRetry, isOffline }: ErrorScreenProps) {
 // Styles
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
+  splashContainer: {
+    flex: 1,
+    backgroundColor: BRAND_COLOR,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  splashImage: {
+    width: '100%',
+    height: '100%',
+  },
   safeArea: {
     flex: 1,
     backgroundColor: BRAND_COLOR,
@@ -335,6 +383,18 @@ const styles = StyleSheet.create({
   },
   headerSpacer: {
     width: 36,
+  },
+  exitButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exitButtonText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '600',
+    lineHeight: 20,
   },
   webViewContainer: {
     flex: 1,

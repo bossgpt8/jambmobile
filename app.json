@@ -9,7 +9,7 @@
     "scheme": "jambgenius",
     "splash": {
       "image": "./assets/splash.png",
-      "resizeMode": "contain",
+      "resizeMode": "cover",
       "backgroundColor": "#1a56db"
     },
     "assetBundlePatterns": [
