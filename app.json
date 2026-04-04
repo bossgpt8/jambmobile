@@ -17,7 +17,7 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.jambgenius.mobile",
+      "bundleIdentifier": "com.jambgenius.edu",
       "buildNumber": "1",
       "infoPlist": {
         "NSCameraUsageDescription": "JambGenius needs camera access for profile photos and document scanning.",
@@ -39,7 +39,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1a56db"
       },
-      "package": "com.jambgenius.mobile",
+      "package": "com.jambgenius.edu",
       "versionCode": 1,
       "permissions": [
         "CAMERA",
