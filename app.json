@@ -23,6 +23,7 @@
       "bundleIdentifier": "com.jambgenius.edu",
       "buildNumber": "1",
       "infoPlist": {
+        "NSMicrophoneUsageDescription": "JambGenius needs microphone access for voice features on the website.",
         "NSAppTransportSecurity": {
           "NSExceptionDomains": {
             "jambgenius.app": {
@@ -43,7 +44,12 @@
       "permissions": [
         "INTERNET",
         "ACCESS_NETWORK_STATE",
-        "READ_CLIPBOARD"
+        "READ_CLIPBOARD",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "POST_NOTIFICATIONS",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE"
       ]
     },
     "web": {
@@ -51,6 +57,14 @@
     },
     "plugins": [
       "expo-splash-screen",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#1a56db",
+          "defaultChannel": "default"
+        }
+      ],
       [
         "expo-build-properties",
         {

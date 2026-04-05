@@ -16,9 +16,19 @@ import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-we
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
+
+// Show notifications as banners even while the app is in the foreground
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
@@ -26,7 +36,14 @@ const SPLASH_DURATION_MS = 7000;
 const CONNECTIVITY_TIMEOUT_MS = 5000;
 
 // Hosts allowed to open inside the WebView
-const ALLOWED_HOSTS = ['jambgenius.app', 'www.jambgenius.app'];
+// Google auth domains are included so the OAuth flow completes within the
+// WebView instead of launching an external browser.
+const ALLOWED_HOSTS = [
+  'jambgenius.app',
+  'www.jambgenius.app',
+  'accounts.google.com',
+  'www.google.com',
+];
 
 function isAllowedHost(url: string): boolean {
   try {
@@ -61,6 +78,55 @@ export default function App() {
   const [appReady, setAppReady] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [showBackOnline, setShowBackOnline] = useState(false);
+  const [pushToken, setPushToken] = useState<string | null>(null);
+
+  // Request notification permission and obtain the Expo push token
+  useEffect(() => {
+    (async () => {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') return;
+
+      // Set up the default Android notification channel
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'JambGenius',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#1a56db',
+        });
+      }
+
+      try {
+        const tokenData = await Notifications.getExpoPushTokenAsync();
+        setPushToken(tokenData.data);
+      } catch {
+        // Physical device required; silently ignore in simulator/emulator
+      }
+    })();
+  }, []);
+
+  // When a user taps a notification, navigate to the linked URL inside the WebView.
+  // The Jamb website notification-manager sends the deep link as either `url` or
+  // `deepLink` depending on which code path triggered the push, so we check both.
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data ?? {};
+      const url = (data.url ?? data.deepLink) as string | undefined;
+      if (url && webViewRef.current) {
+        if (isAllowedHost(url)) {
+          webViewRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
+        } else {
+          Linking.openURL(url).catch(() => {});
+        }
+      }
+    });
+    return () => subscription.remove();
+  }, []);
 
   // Hide the native splash screen once the component is mounted
   useEffect(() => {
@@ -228,14 +294,41 @@ export default function App() {
     webViewRef.current?.goBack();
   }, []);
 
+  // Inject the Expo push token into the page (called on load and on demand)
+  const injectPushToken = useCallback((token: string) => {
+    const script = `
+      (function () {
+        window.__expoPushToken = ${JSON.stringify(token)};
+        window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(token)} }));
+        true;
+      })();
+    `;
+    webViewRef.current?.injectJavaScript(script);
+  }, []);
+
+  const handleWebViewLoad = useCallback(() => {
+    if (pushToken) injectPushToken(pushToken);
+  }, [pushToken, injectPushToken]);
+
   // ---------------------------------------------------------------------------
   // Clipboard image paste bridge
   // ---------------------------------------------------------------------------
 
-  // Injected before page content loads: intercepts paste events and forwards
-  // them to the React Native layer so we can read clipboard images natively.
+  // Injected before page content loads:
+  // 1. Marks the session as running inside the JambGenius mobile app so the
+  //    website's isApp() / detectApp() checks return true (enables push-token
+  //    registration and hides the "download the app" popup).
+  // 2. Intercepts paste events and forwards them to the React Native layer so
+  //    we can read clipboard images natively.
   const PASTE_INTERCEPT_JS = `
     (function () {
+      // ── App detection flags ──────────────────────────────────────────────
+      try {
+        localStorage.setItem('isInApp', 'true');
+        window.__isJambGeniusApp = true;
+      } catch (e) {}
+
+      // ── Clipboard image paste bridge ─────────────────────────────────────
       document.addEventListener('paste', function (e) {
         // If the browser already has clipboard image data, let it through.
         var items = e.clipboardData && e.clipboardData.items;
@@ -263,6 +356,11 @@ export default function App() {
     try {
       msg = JSON.parse(event.nativeEvent.data);
     } catch {
+      return;
+    }
+
+    if (msg?.type === 'GET_PUSH_TOKEN') {
+      if (pushToken) injectPushToken(pushToken);
       return;
     }
 
@@ -309,7 +407,7 @@ export default function App() {
       true;
     `;
     webViewRef.current?.injectJavaScript(injectScript);
-  }, []);
+  }, [pushToken]);
 
   if (!appReady) {
     return (
@@ -384,6 +482,14 @@ export default function App() {
             // Media permissions
             allowsInlineMediaPlayback
             mediaPlaybackRequiresUserAction={false}
+            // Microphone: auto-grant on Android; prompt on iOS when same host
+            // onPermissionRequest is not yet in the react-native-webview 13.x typings
+            // but is a valid Android WebView prop — use a targeted cast.
+            {...({
+              onPermissionRequest: (request: { resources: string[]; grant: (r: string[]) => void }) =>
+                request.grant(request.resources),
+            } as Record<string, unknown>)}
+            mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
             // File / camera access
             allowFileAccess
             allowFileAccessFromFileURLs
@@ -393,17 +499,20 @@ export default function App() {
             // Zoom
             scalesPageToFit={Platform.OS === 'android'}
             // Use a standard mobile browser user agent so Google Sign-In / Firebase
-            // does not block the request (WebView "wv" marker removed)
+            // does not block the request (WebView "wv" marker removed).
+            // JambGeniusApp/1.0 is appended so the website's isApp() / detectApp()
+            // helpers can identify requests coming from this app.
             userAgent={
               Platform.OS === 'android'
-                ? 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
-                : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1'
+                ? 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 JambGeniusApp/1.0'
+                : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1 JambGeniusApp/1.0'
             }
             // Pull-to-refresh behaviour
             bounces={false}
             overScrollMode="never"
             // Clipboard image paste bridge
             injectedJavaScriptBeforeContentLoaded={PASTE_INTERCEPT_JS}
+            onLoad={handleWebViewLoad}
             onMessage={handleMessage}
           />
         ) : (
