@@ -34,8 +34,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Patch expo-clipboard for Gradle compatibility
+        run: |
+          python3 - <<'EOF'
+          f = 'node_modules/expo-clipboard/android/build.gradle'
+          content = open(f).read()
+          old = '    useExpoPublishing()\n    useCoreDependencies()'
+          new = '    useDefaultAndroidSdkVersions()\n    useExpoPublishing()\n    useCoreDependencies()'
+          if old in content:
+              with open(f, 'w') as fh:
+                  fh.write(content.replace(old, new))
+              print('Patched expo-clipboard/android/build.gradle: added useDefaultAndroidSdkVersions()')
+          else:
+              print('expo-clipboard/android/build.gradle: pattern not found, skipping patch')
+          EOF
+
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Pin Gradle wrapper to 8.6 for expo-modules compatibility
+        run: |
+          sed -i 's|distributions/gradle-.*-all\.zip|distributions/gradle-8.6-all.zip|g' \
+            android/gradle/wrapper/gradle-wrapper.properties
+          grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Write google-services.json
         run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 --decode > android/app/google-services.json
