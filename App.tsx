@@ -311,10 +311,21 @@ export default function App() {
   // Clipboard image paste bridge
   // ---------------------------------------------------------------------------
 
-  // Injected before page content loads: intercepts paste events and forwards
-  // them to the React Native layer so we can read clipboard images natively.
+  // Injected before page content loads:
+  // 1. Marks the session as running inside the JambGenius mobile app so the
+  //    website's isApp() / detectApp() checks return true (enables push-token
+  //    registration and hides the "download the app" popup).
+  // 2. Intercepts paste events and forwards them to the React Native layer so
+  //    we can read clipboard images natively.
   const PASTE_INTERCEPT_JS = `
     (function () {
+      // ── App detection flags ──────────────────────────────────────────────
+      try {
+        localStorage.setItem('isInApp', 'true');
+        window.__isJambGeniusApp = true;
+      } catch (e) {}
+
+      // ── Clipboard image paste bridge ─────────────────────────────────────
       document.addEventListener('paste', function (e) {
         // If the browser already has clipboard image data, let it through.
         var items = e.clipboardData && e.clipboardData.items;
@@ -485,11 +496,13 @@ export default function App() {
             // Zoom
             scalesPageToFit={Platform.OS === 'android'}
             // Use a standard mobile browser user agent so Google Sign-In / Firebase
-            // does not block the request (WebView "wv" marker removed)
+            // does not block the request (WebView "wv" marker removed).
+            // JambGeniusApp/1.0 is appended so the website's isApp() / detectApp()
+            // helpers can identify requests coming from this app.
             userAgent={
               Platform.OS === 'android'
-                ? 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
-                : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1'
+                ? 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 JambGeniusApp/1.0'
+                : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1 JambGeniusApp/1.0'
             }
             // Pull-to-refresh behaviour
             bounces={false}
