@@ -291,18 +291,21 @@ export default function App() {
     webViewRef.current?.goBack();
   }, []);
 
-  // Inject the Expo push token into the page once the WebView loads
-  const handleWebViewLoad = useCallback(() => {
-    if (!pushToken) return;
+  // Inject the Expo push token into the page (called on load and on demand)
+  const injectPushToken = useCallback((token: string) => {
     const script = `
       (function () {
-        window.__expoPushToken = ${JSON.stringify(pushToken)};
-        window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(pushToken)} }));
+        window.__expoPushToken = ${JSON.stringify(token)};
+        window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(token)} }));
         true;
       })();
     `;
     webViewRef.current?.injectJavaScript(script);
-  }, [pushToken]);
+  }, []);
+
+  const handleWebViewLoad = useCallback(() => {
+    if (pushToken) injectPushToken(pushToken);
+  }, [pushToken, injectPushToken]);
 
   // ---------------------------------------------------------------------------
   // Clipboard image paste bridge
@@ -343,16 +346,7 @@ export default function App() {
     }
 
     if (msg?.type === 'GET_PUSH_TOKEN') {
-      if (pushToken) {
-        const script = `
-          (function () {
-            window.__expoPushToken = ${JSON.stringify(pushToken)};
-            window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(pushToken)} }));
-            true;
-          })();
-        `;
-        webViewRef.current?.injectJavaScript(script);
-      }
+      if (pushToken) injectPushToken(pushToken);
       return;
     }
 
@@ -475,8 +469,12 @@ export default function App() {
             allowsInlineMediaPlayback
             mediaPlaybackRequiresUserAction={false}
             // Microphone: auto-grant on Android; prompt on iOS when same host
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            {...({ onPermissionRequest: (request: any) => request.grant(request.resources) } as any)}
+            // onPermissionRequest is not yet in the react-native-webview 13.x typings
+            // but is a valid Android WebView prop — use a targeted cast.
+            {...({
+              onPermissionRequest: (request: { resources: string[]; grant: (r: string[]) => void }) =>
+                request.grant(request.resources),
+            } as Record<string, unknown>)}
             mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
             // File / camera access
             allowFileAccess
