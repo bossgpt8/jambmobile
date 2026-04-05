@@ -16,9 +16,19 @@ import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-we
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
+
+// Show notifications as banners even while the app is in the foreground
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
@@ -68,6 +78,52 @@ export default function App() {
   const [appReady, setAppReady] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [showBackOnline, setShowBackOnline] = useState(false);
+  const [pushToken, setPushToken] = useState<string | null>(null);
+
+  // Request notification permission and obtain the Expo push token
+  useEffect(() => {
+    (async () => {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') return;
+
+      // Set up the default Android notification channel
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'JambGenius',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#1a56db',
+        });
+      }
+
+      try {
+        const tokenData = await Notifications.getExpoPushTokenAsync();
+        setPushToken(tokenData.data);
+      } catch {
+        // Physical device required; silently ignore in simulator/emulator
+      }
+    })();
+  }, []);
+
+  // When a user taps a notification, navigate to the linked URL inside the WebView
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const url = response.notification.request.content.data?.url as string | undefined;
+      if (url && webViewRef.current) {
+        if (isAllowedHost(url)) {
+          webViewRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
+        } else {
+          Linking.openURL(url).catch(() => {});
+        }
+      }
+    });
+    return () => subscription.remove();
+  }, []);
 
   // Hide the native splash screen once the component is mounted
   useEffect(() => {
@@ -235,6 +291,19 @@ export default function App() {
     webViewRef.current?.goBack();
   }, []);
 
+  // Inject the Expo push token into the page once the WebView loads
+  const handleWebViewLoad = useCallback(() => {
+    if (!pushToken) return;
+    const script = `
+      (function () {
+        window.__expoPushToken = ${JSON.stringify(pushToken)};
+        window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(pushToken)} }));
+        true;
+      })();
+    `;
+    webViewRef.current?.injectJavaScript(script);
+  }, [pushToken]);
+
   // ---------------------------------------------------------------------------
   // Clipboard image paste bridge
   // ---------------------------------------------------------------------------
@@ -270,6 +339,20 @@ export default function App() {
     try {
       msg = JSON.parse(event.nativeEvent.data);
     } catch {
+      return;
+    }
+
+    if (msg?.type === 'GET_PUSH_TOKEN') {
+      if (pushToken) {
+        const script = `
+          (function () {
+            window.__expoPushToken = ${JSON.stringify(pushToken)};
+            window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(pushToken)} }));
+            true;
+          })();
+        `;
+        webViewRef.current?.injectJavaScript(script);
+      }
       return;
     }
 
@@ -316,7 +399,7 @@ export default function App() {
       true;
     `;
     webViewRef.current?.injectJavaScript(injectScript);
-  }, []);
+  }, [pushToken]);
 
   if (!appReady) {
     return (
@@ -392,7 +475,8 @@ export default function App() {
             allowsInlineMediaPlayback
             mediaPlaybackRequiresUserAction={false}
             // Microphone: auto-grant on Android; prompt on iOS when same host
-            onPermissionRequest={(request) => request.grant(request.resources)}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            {...({ onPermissionRequest: (request: any) => request.grant(request.resources) } as any)}
             mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
             // File / camera access
             allowFileAccess
@@ -414,6 +498,7 @@ export default function App() {
             overScrollMode="never"
             // Clipboard image paste bridge
             injectedJavaScriptBeforeContentLoaded={PASTE_INTERCEPT_JS}
+            onLoad={handleWebViewLoad}
             onMessage={handleMessage}
           />
         ) : (
