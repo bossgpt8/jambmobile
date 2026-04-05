@@ -65,6 +65,14 @@ jobs:
         run: |
           # Strip carriage returns to handle base64 encoded on Windows, then decode
           echo "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '\r' | base64 --decode > android/app/release.keystore
+          # Validate that the decoded file is non-empty; a 0-byte file means
+          # KEYSTORE_BASE64 is unset/empty, which causes keytool to throw EOFException.
+          if [ ! -s android/app/release.keystore ]; then
+            echo "Error: release.keystore is empty after decoding." >&2
+            echo "Ensure the KEYSTORE_BASE64 repository secret is set and contains a valid base64-encoded keystore." >&2
+            exit 1
+          fi
+          echo "Keystore decoded successfully ($(wc -c < android/app/release.keystore) bytes)"
 
       - name: Convert keystore to PKCS12 for Java 17 compatibility
         run: |
