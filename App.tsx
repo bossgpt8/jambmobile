@@ -391,6 +391,9 @@ export default function App() {
             // Media permissions
             allowsInlineMediaPlayback
             mediaPlaybackRequiresUserAction={false}
+            // Microphone: auto-grant on Android; prompt on iOS when same host
+            onPermissionRequest={(request) => request.grant(request.resources)}
+            mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
             // File / camera access
             allowFileAccess
             allowFileAccessFromFileURLs
