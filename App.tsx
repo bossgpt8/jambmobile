@@ -110,10 +110,13 @@ export default function App() {
     })();
   }, []);
 
-  // When a user taps a notification, navigate to the linked URL inside the WebView
+  // When a user taps a notification, navigate to the linked URL inside the WebView.
+  // The Jamb website notification-manager sends the deep link as either `url` or
+  // `deepLink` depending on which code path triggered the push, so we check both.
   useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      const url = response.notification.request.content.data?.url as string | undefined;
+      const data = response.notification.request.content.data ?? {};
+      const url = (data.url ?? data.deepLink) as string | undefined;
       if (url && webViewRef.current) {
         if (isAllowedHost(url)) {
           webViewRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
