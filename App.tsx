@@ -26,7 +26,14 @@ const SPLASH_DURATION_MS = 7000;
 const CONNECTIVITY_TIMEOUT_MS = 5000;
 
 // Hosts allowed to open inside the WebView
-const ALLOWED_HOSTS = ['jambgenius.app', 'www.jambgenius.app'];
+// Google auth domains are included so the OAuth flow completes within the
+// WebView instead of launching an external browser.
+const ALLOWED_HOSTS = [
+  'jambgenius.app',
+  'www.jambgenius.app',
+  'accounts.google.com',
+  'www.google.com',
+];
 
 function isAllowedHost(url: string): boolean {
   try {
