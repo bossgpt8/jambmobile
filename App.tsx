@@ -584,7 +584,7 @@ export default function App() {
             onMessage={handleMessage}
           />
         ) : (
-          <ErrorScreen onRetry={handleReload} isOffline={!isConnected} />
+          <ErrorScreen onRetry={handleReload} />
         )}
 
         {showBackOnline && (
@@ -602,23 +602,16 @@ export default function App() {
 // ---------------------------------------------------------------------------
 interface ErrorScreenProps {
   onRetry: () => void;
-  isOffline: boolean;
 }
 
-function ErrorScreen({ onRetry, isOffline }: ErrorScreenProps) {
+function ErrorScreen({ onRetry }: ErrorScreenProps) {
   return (
     <View style={styles.errorContainer}>
       <Image
         source={require('./assets/offline.png')}
         style={styles.errorImage}
-        resizeMode="contain"
+        resizeMode="cover"
       />
-      <Text style={styles.errorTitle}>{isOffline ? 'No Connection' : 'Something went wrong'}</Text>
-      <Text style={styles.errorMessage}>
-        {isOffline
-          ? "You are offline or your connection dropped. Please check your internet and try again."
-          : "We couldn't load JambGenius right now. Please try again."}
-      </Text>
       <TouchableOpacity
         style={styles.retryButton}
         onPress={onRetry}
@@ -706,30 +699,21 @@ const styles = StyleSheet.create({
   },
   errorContainer: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#000',
   },
   errorImage: {
-    width: 120,
-    height: 120,
-    marginBottom: 20,
-  },
-  errorTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 10,
-  },
-  errorMessage: {
-    fontSize: 15,
-    color: '#6b7280',
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 32,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
   },
   retryButton: {
+    position: 'absolute',
+    bottom: 48,
+    alignSelf: 'center',
     backgroundColor: BRAND_COLOR,
     paddingVertical: 14,
     paddingHorizontal: 40,
