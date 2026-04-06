@@ -13,6 +13,7 @@ import {
   AppState,
 } from 'react-native';
 import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
@@ -34,6 +35,36 @@ const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
 const SPLASH_DURATION_MS = 7000;
 const CONNECTIVITY_TIMEOUT_MS = 5000;
+
+// AsyncStorage key used to persist the last successfully visited URL
+const LAST_URL_KEY = 'jambgenius_last_url';
+
+// Bundled offline fallback page shown when the user is offline and there is no
+// cached version of the site available.
+const OFFLINE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JambGenius – Offline</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      background:#f9fafb;display:flex;align-items:center;justify-content:center;
+      min-height:100vh;padding:32px;text-align:center;color:#111827}
+    .icon{font-size:64px;margin-bottom:24px}
+    h1{font-size:24px;font-weight:700;margin-bottom:12px}
+    p{font-size:15px;color:#6b7280;line-height:1.6}
+  </style>
+</head>
+<body>
+  <div>
+    <div class="icon">📶</div>
+    <h1>You're Offline</h1>
+    <p>No internet connection detected.<br/>Please check your network — the app will reload automatically once you're back online.</p>
+  </div>
+</body>
+</html>`;
 
 // Hosts allowed to open inside the WebView
 // Google auth domains are included so the OAuth flow completes within the
@@ -73,12 +104,18 @@ export default function App() {
   const webViewRef = useRef<WebView>(null);
   const previousConnectedRef = useRef<boolean | null>(null);
   const backOnlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks the last URL successfully navigated to, persisted across app restarts
+  const lastUrlRef = useRef(APP_URL);
   const [canGoBack, setCanGoBack] = useState(false);
   const [isError, setIsError] = useState(false);
   const [appReady, setAppReady] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [showBackOnline, setShowBackOnline] = useState(false);
   const [pushToken, setPushToken] = useState<string | null>(null);
+  // Controls what the WebView displays: the live site URL or the local offline HTML
+  const [webViewSource, setWebViewSource] = useState<{ uri: string } | { html: string }>(
+    { uri: APP_URL }
+  );
 
   // Request notification permission and obtain the Expo push token
   useEffect(() => {
@@ -126,6 +163,19 @@ export default function App() {
       }
     });
     return () => subscription.remove();
+  }, []);
+
+  // Restore the last visited URL from persistent storage so the app resumes
+  // where the user left off, even after a full restart.
+  useEffect(() => {
+    AsyncStorage.getItem(LAST_URL_KEY)
+      .then((url) => {
+        if (url && isAllowedHost(url)) {
+          lastUrlRef.current = url;
+          setWebViewSource({ uri: url });
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Hide the native splash screen once the component is mounted
@@ -187,7 +237,8 @@ export default function App() {
     if (previous === false && isConnected) {
       setShowBackOnline(true);
       setIsError(false);
-      webViewRef.current?.reload();
+      // Navigate to the last saved URL so the user resumes where they left off
+      setWebViewSource({ uri: lastUrlRef.current });
 
       if (backOnlineTimerRef.current) {
         clearTimeout(backOnlineTimerRef.current);
@@ -250,6 +301,11 @@ export default function App() {
   const handleNavigationStateChange = useCallback(
     (navState: WebViewNavigation) => {
       setCanGoBack(navState.canGoBack);
+      // Persist the last URL the user successfully navigated to
+      if (navState.url && !navState.loading && isAllowedHost(navState.url)) {
+        lastUrlRef.current = navState.url;
+        AsyncStorage.setItem(LAST_URL_KEY, navState.url).catch(() => {});
+      }
     },
     []
   );
@@ -287,7 +343,7 @@ export default function App() {
       return;
     }
     setIsError(false);
-    webViewRef.current?.reload();
+    setWebViewSource({ uri: lastUrlRef.current });
   }, []);
 
   const handleGoBack = useCallback(() => {
@@ -305,6 +361,20 @@ export default function App() {
     `;
     webViewRef.current?.injectJavaScript(script);
   }, []);
+
+  // Handle WebView load errors.
+  // When offline: switch to the local offline HTML page so the user sees a
+  // branded fallback instead of a blank screen.  The cached site content is
+  // served by the WebView's own HTTP cache, so we only reach this code path
+  // when there is no cached version available.
+  // When online: surface the generic error screen so the user can retry.
+  const handleWebViewError = useCallback(() => {
+    if (!isConnected) {
+      setWebViewSource({ html: OFFLINE_HTML });
+    } else {
+      setIsError(true);
+    }
+  }, [isConnected]);
 
   const handleWebViewLoad = useCallback(() => {
     if (pushToken) injectPushToken(pushToken);
@@ -423,8 +493,6 @@ export default function App() {
     );
   }
 
-  const shouldShowOffline = !isConnected;
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <ExpoStatusBar style="light" backgroundColor={BRAND_COLOR} />
@@ -456,18 +524,18 @@ export default function App() {
 
       {/* WebView */}
       <View style={styles.webViewContainer}>
-        {!isError && !shouldShowOffline ? (
+        {!isError ? (
           <WebView
             ref={webViewRef}
-            source={{ uri: APP_URL }}
+            source={webViewSource}
             style={styles.webView}
+            // Always prefer cache so the site loads from disk when offline.
+            // The WebView falls back to the network when no cache entry exists.
             cacheEnabled
-            cacheMode={isConnected ? 'LOAD_DEFAULT' : 'LOAD_CACHE_ELSE_NETWORK'}
+            cacheMode="LOAD_CACHE_ELSE_NETWORK"
             onNavigationStateChange={handleNavigationStateChange}
             onShouldStartLoadWithRequest={handleShouldStartLoadWithRequest}
-            onError={() => {
-              setIsError(true);
-            }}
+            onError={handleWebViewError}
             onHttpError={(syntheticEvent) => {
               const { nativeEvent } = syntheticEvent;
               if (nativeEvent.statusCode >= 500) {
@@ -516,7 +584,7 @@ export default function App() {
             onMessage={handleMessage}
           />
         ) : (
-          <ErrorScreen onRetry={handleReload} isOffline={shouldShowOffline} />
+          <ErrorScreen onRetry={handleReload} isOffline={!isConnected} />
         )}
 
         {showBackOnline && (
