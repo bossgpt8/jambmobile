@@ -31,11 +31,13 @@ Notifications.setNotificationHandler({
   }),
 });
 
+// Amber warning color for the offline banner
+const OFFLINE_BANNER_COLOR = '#b45309';
 const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
 const SPLASH_DURATION_MS = 7000;
-const CONNECTIVITY_TIMEOUT_MS = 5000;
 
+const CONNECTIVITY_TIMEOUT_MS = 5000;
 // AsyncStorage key used to persist the last successfully visited URL
 const LAST_URL_KEY = 'jambgenius_last_url';
 
@@ -522,6 +524,15 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
+      {/* Offline banner – shown whenever connectivity is lost; disappears when back online */}
+      {!isConnected && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineBannerText}>
+            📶  No internet connection — please connect to sync changes and access full features
+          </Text>
+        </View>
+      )}
+
       {/* WebView */}
       <View style={styles.webViewContainer}>
         {!isError ? (
@@ -743,5 +754,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.2,
+  },
+  offlineBanner: {
+    backgroundColor: OFFLINE_BANNER_COLOR,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  offlineBannerText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 18,
   },
 });

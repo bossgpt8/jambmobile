@@ -6,6 +6,18 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      architecture:
+        description: 'Target CPU architecture'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - arm64-v8a
+          - armeabi-v7a
+          - x86
+          - x86_64
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -51,6 +63,31 @@ jobs:
 
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Configure ABI filter
+        env:
+          TARGET_ABI: ${{ github.event.inputs.architecture }}
+        run: |
+          if [ "$TARGET_ABI" = "all" ] || [ -z "$TARGET_ABI" ] || [ "$TARGET_ABI" = "null" ]; then
+            echo "Building universal APK (all architectures)"
+          else
+            python3 - <<'PYEOF'
+          import re, os
+          abi = os.environ['TARGET_ABI']
+          f = 'android/app/build.gradle'
+          content = open(f).read()
+          # Inject ndk.abiFilters inside the defaultConfig block so only the
+          # requested ABI is included, producing a smaller architecture-specific APK.
+          content = re.sub(
+              r'(defaultConfig\s*\{)',
+              r'\1\n        ndk { abiFilters "' + abi + '" }',
+              content,
+              count=1,
+          )
+          open(f, 'w').write(content)
+          print(f'ABI filter set to: {abi}')
+          PYEOF
+          fi
 
       - name: Pin Gradle wrapper to 8.6 for expo-modules compatibility
         run: |
@@ -116,6 +153,6 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: jambgenius-release-apk
+          name: jambgenius-release-${{ github.event.inputs.architecture || 'all' }}-apk
           path: android/app/build/outputs/apk/release/*.apk
           retention-days: 30
