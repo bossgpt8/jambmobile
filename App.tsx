@@ -416,14 +416,16 @@ export default function App() {
 
     if (pushToken) injectPushToken(pushToken);
 
-    // The website's notification-manager.js reads the user ID from
-    // sessionStorage.getItem('currentUser'), but auth-state.js actually stores
-    // the session under the key 'jambgenius_auth_state'.  Patch the method so
-    // it reads from the correct key, then re-trigger token registration.
+    // Register the Expo push token with the server so push broadcasts reach
+    // this device.  The production site is a React SPA and does not expose a
+    // global notificationManager object, so we register directly via fetch
+    // from inside the WebView.  We also patch window.notificationManager if
+    // it happens to exist (legacy compatibility with the plain-HTML site).
     webViewRef.current?.injectJavaScript(`
       (function () {
-        // Maximum wait time for notificationManager to initialise (250ms × 40 = 10 s)
-        var MAX_PATCH_ATTEMPTS = 40;
+        // ── helpers ────────────────────────────────────────────────────────
+        var MAX_PATCH_ATTEMPTS = 40;   // 250 ms × 40 = 10 s
+        var MAX_DIRECT_ATTEMPTS = 60;  // 1 s × 60 = 60 s
 
         function getUserIdFromSession() {
           try {
@@ -436,6 +438,7 @@ export default function App() {
           return null;
         }
 
+        // ── legacy path: patch notificationManager if present ───────────
         function patchAndRegister() {
           var mgr = window.notificationManager;
           if (!mgr) return false;
@@ -447,12 +450,47 @@ export default function App() {
         }
 
         if (!patchAndRegister()) {
-          var attempts = 0;
-          var iv = setInterval(function () {
-            if (patchAndRegister() || ++attempts >= MAX_PATCH_ATTEMPTS) {
-              clearInterval(iv);
+          var patchAttempts = 0;
+          var patchIv = setInterval(function () {
+            if (patchAndRegister() || ++patchAttempts >= MAX_PATCH_ATTEMPTS) {
+              clearInterval(patchIv);
             }
           }, 250);
+        }
+
+        // ── direct path: register token via fetch (works with React SPA) ─
+        var directAttempts = 0;
+        var directTimer = null;
+
+        function tryRegisterDirectly() {
+          var token = window.__expoPushToken;
+          if (!token) return; // token not injected yet; expoPushToken event will retrigger
+          var userId = getUserIdFromSession();
+          if (!userId) {
+            // User not yet authenticated — retry until auth state is available
+            if (directAttempts < MAX_DIRECT_ATTEMPTS) {
+              directAttempts++;
+              directTimer = setTimeout(tryRegisterDirectly, 1000);
+            }
+            return;
+          }
+          if (directTimer !== null) { clearTimeout(directTimer); directTimer = null; }
+          fetch('/api/notification', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'register-token', userId: userId, expoPushToken: token })
+          }).catch(function () {});
+        }
+
+        tryRegisterDirectly();
+
+        // Listen for the token in case it arrives after this script runs
+        // (guard prevents duplicate listeners on subsequent page navigations)
+        if (!window.__jambTokenListenerAdded) {
+          window.__jambTokenListenerAdded = true;
+          window.addEventListener('expoPushToken', function (e) {
+            if (e.detail) { directAttempts = 0; tryRegisterDirectly(); }
+          });
         }
       })();
       true;
