@@ -383,25 +383,36 @@ export default function App() {
     // it reads from the correct key, then re-trigger token registration.
     webViewRef.current?.injectJavaScript(`
       (function () {
+        // Maximum wait time for notificationManager to initialise (250ms × 40 = 10 s)
+        var MAX_PATCH_ATTEMPTS = 40;
+
+        function getUserIdFromSession() {
+          try {
+            var raw = sessionStorage.getItem('jambgenius_auth_state');
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && parsed.uid) return parsed.uid;
+            }
+          } catch (e) {}
+          return null;
+        }
+
         function patchAndRegister() {
           var mgr = window.notificationManager;
           if (!mgr) return false;
-          mgr.getCurrentUserId = function () {
-            try {
-              var s = sessionStorage.getItem('jambgenius_auth_state');
-              if (s) { var u = JSON.parse(s); if (u && u.uid) return u.uid; }
-            } catch (e) {}
-            return null;
-          };
+          mgr.getCurrentUserId = getUserIdFromSession;
           if (window.__expoPushToken) {
             mgr.registerExpoPushToken(window.__expoPushToken);
           }
           return true;
         }
+
         if (!patchAndRegister()) {
           var attempts = 0;
           var iv = setInterval(function () {
-            if (patchAndRegister() || ++attempts > 40) clearInterval(iv);
+            if (patchAndRegister() || ++attempts >= MAX_PATCH_ATTEMPTS) {
+              clearInterval(iv);
+            }
           }, 250);
         }
       })();
@@ -438,23 +449,23 @@ export default function App() {
           '  user-select: none !important;',
           '  -webkit-touch-callout: none !important;',
           '}',
-          'input, textarea, [contenteditable], [contenteditable="true"] {',
+          'input, textarea, [contenteditable] {',
           '  -webkit-user-select: text !important;',
           '  user-select: text !important;',
           '}'
         ].join('');
         document.head.appendChild(noSelStyle);
 
+        function isEditableTarget(t) {
+          return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+        }
+
         document.addEventListener('selectstart', function (e) {
-          var t = e.target;
-          if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return;
-          e.preventDefault();
+          if (!isEditableTarget(e.target)) e.preventDefault();
         }, true);
 
         document.addEventListener('copy', function (e) {
-          var t = e.target;
-          if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return;
-          e.preventDefault();
+          if (!isEditableTarget(e.target)) e.preventDefault();
         }, true);
       } catch (e) {}
 
