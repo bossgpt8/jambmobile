@@ -18,6 +18,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -110,6 +111,8 @@ export default function App() {
   const webViewRef = useRef<WebView>(null);
   const previousConnectedRef = useRef<boolean | null>(null);
   const backOnlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True once the WebView has fired its first onLoad event
+  const webViewReadyRef = useRef(false);
   // Tracks the last URL successfully navigated to, persisted across app restarts
   const lastUrlRef = useRef(APP_URL);
   const [canGoBack, setCanGoBack] = useState(false);
@@ -144,7 +147,14 @@ export default function App() {
       }
 
       try {
-        const tokenData = await Notifications.getExpoPushTokenAsync();
+        // projectId is required in Expo SDK 49+ for production builds.
+        // It is read from app.json > extra.eas.projectId (set via `eas init`).
+        const projectId =
+          Constants.expoConfig?.extra?.eas?.projectId as string | undefined ??
+          (Constants as any).easConfig?.projectId as string | undefined;
+        const tokenData = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : undefined
+        );
         setPushToken(tokenData.data);
       } catch {
         // Physical device required; silently ignore in simulator/emulator
@@ -360,6 +370,17 @@ export default function App() {
     webViewRef.current?.injectJavaScript(script);
   }, []);
 
+  // Fix the token/WebView load race condition:
+  // If the async token fetch completes AFTER the WebView has already fired its
+  // first onLoad event (the common case), handleWebViewLoad would have found
+  // pushToken===null and skipped injection.  This effect re-injects as soon as
+  // the token becomes available, provided the WebView is already ready.
+  useEffect(() => {
+    if (pushToken && webViewReadyRef.current) {
+      injectPushToken(pushToken);
+    }
+  }, [pushToken, injectPushToken]);
+
   // Handle WebView load errors.
   // When offline: switch to the local offline HTML page so the user sees a
   // branded fallback instead of a blank screen.  The cached site content is
@@ -375,6 +396,10 @@ export default function App() {
   }, [isConnected]);
 
   const handleWebViewLoad = useCallback(() => {
+    // Mark the WebView as ready so the pushToken race-condition effect can
+    // inject the token when it arrives after the first load event.
+    webViewReadyRef.current = true;
+
     if (pushToken) injectPushToken(pushToken);
 
     // The website's notification-manager.js reads the user ID from

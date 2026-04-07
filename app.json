@@ -83,6 +83,7 @@
       "eas": {
         "projectId": "your-eas-project-id"
       }
-    }
+    },
+    "_instructions": "Replace 'your-eas-project-id' above with your real EAS project ID. Run `eas init` in this directory (requires `npm install -g eas-cli` and a free expo.dev account) — it will write the correct UUID automatically."
   }
 }
