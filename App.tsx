@@ -19,6 +19,11 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
+
+// Allow Chrome Custom Tab to complete the OAuth session when redirected back
+WebBrowser.maybeCompleteAuthSession();
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -83,6 +88,16 @@ const ALLOWED_HOSTS = [
   'googleapis.com',
 ];
 
+// Firebase Web API key — used by the in-WebView auth bridge to exchange a
+// Google id_token for a Firebase session via the Identity Toolkit REST API.
+// This is a public/publishable value (it is already present in the website's
+// client-side JavaScript bundle).
+const FIREBASE_WEB_API_KEY = 'AIzaSyCSVbZVsBO8luLUT-HznUQe57FGRZ_2U5g';
+
+// Google OAuth web client ID for the JambGenius Firebase project.
+// Used for the native Chrome Custom Tab sign-in path.
+const GOOGLE_WEB_CLIENT_ID = '1057264829205-4o5uiohg7c1jj7nf6ljan53eft0ld2pr.apps.googleusercontent.com';
+
 function isAllowedHost(url: string): boolean {
   try {
     const { hostname } = new URL(url);
@@ -124,6 +139,36 @@ export default function App() {
   const [webViewSource, setWebViewSource] = useState<{ uri: string } | { html: string }>(
     { uri: APP_URL }
   );
+
+  // ── Native Google Sign-In (Chrome Custom Tab) ──────────────────────────────
+  // Opens Google OAuth in a Chrome Custom Tab so the user can pick an existing
+  // device account instead of typing credentials manually.  The WebView's
+  // window.open interceptor (in PASTE_INTERCEPT_JS) posts a GOOGLE_SIGN_IN
+  // message to trigger promptAsync(); the resulting id_token is injected back
+  // into the page which completes Firebase sign-in via the REST API bridge.
+  const [, googleResponse, googlePromptAsync] = Google.useAuthRequest({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+  });
+
+  // Keep a stable ref so the message handler (useCallback with []) can call it
+  const googlePromptRef = useRef(googlePromptAsync);
+  useEffect(() => { googlePromptRef.current = googlePromptAsync; }, [googlePromptAsync]);
+
+  // When the Chrome Custom Tab returns an auth result, inject it into the WebView
+  // so the in-page Firebase REST bridge can complete the sign-in.
+  useEffect(() => {
+    if (!googleResponse) return;
+    let script: string;
+    if (googleResponse.type === 'success') {
+      const params = googleResponse.params as Record<string, string>;
+      const idToken = params.id_token ?? null;
+      script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:${JSON.stringify({ idToken })}}))})();true;`;
+    } else {
+      const cancelled = googleResponse.type === 'cancel' || googleResponse.type === 'dismiss';
+      script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:${JSON.stringify({ error: cancelled ? 'cancelled' : 'auth_failed' })}}))})();true;`;
+    }
+    webViewRef.current?.injectJavaScript(script);
+  }, [googleResponse]);
 
   // Request notification permission and obtain the Expo push token
   useEffect(() => {
@@ -344,6 +389,31 @@ export default function App() {
         Linking.openURL(url).catch(() => {});
         return false;
       }
+
+      // Android intent:// URLs appear during Google OAuth when Google's sign-in
+      // page tries to redirect authentication to Chrome.  Instead of opening the
+      // system browser, extract the S.browser_fallback_url and navigate the
+      // WebView to it directly so the OAuth flow stays in-app.
+      if (url.startsWith('intent://')) {
+        try {
+          const match = url.match(/S\.browser_fallback_url=([^;]+)/);
+          if (match) {
+            const fallback = decodeURIComponent(match[1]);
+            if (isAllowedHost(fallback)) {
+              setTimeout(() => {
+                webViewRef.current?.injectJavaScript(
+                  `window.location.href = ${JSON.stringify(fallback)}; true;`
+                );
+              }, 0);
+              return false;
+            }
+          }
+        } catch {}
+        // No usable in-app fallback — let the OS handle it
+        Linking.openURL(url).catch(() => {});
+        return false;
+      }
+
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         // Handle deep links / custom schemes
         Linking.openURL(url).catch(() => {});
@@ -504,6 +574,95 @@ export default function App() {
       })();
       true;
     `);
+
+    // ── Native Google Sign-In bridge (Firebase REST API) ──────────────────
+    // When the Chrome Custom Tab returns a Google id_token, React Native
+    // dispatches a 'nativeGoogleSignInResult' CustomEvent into the WebView.
+    // This script listens for that event and completes Firebase authentication
+    // via the Identity Toolkit REST API (no Firebase SDK module access needed).
+    // Guard flag prevents duplicate listener registration on page navigations.
+    webViewRef.current?.injectJavaScript(`
+      (function () {
+        if (window.__nativeGoogleAuthBridgeInstalled) return;
+        window.__nativeGoogleAuthBridgeInstalled = true;
+
+        window.addEventListener('nativeGoogleSignInResult', function (e) {
+          var detail = e.detail || {};
+          var idToken = detail.idToken;
+          if (!idToken) return; // cancelled or error — Firebase popup will time out cleanly
+
+          var apiKey = ${JSON.stringify(FIREBASE_WEB_API_KEY)};
+
+          fetch(
+            'https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=' + apiKey,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                requestUri: 'http://localhost',
+                postBody: 'id_token=' + encodeURIComponent(idToken) + '&providerId=google.com',
+                returnSecureToken: true,
+                returnIdpCredential: true
+              })
+            }
+          )
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.error) {
+              console.warn('[JambGenius] Google sign-in REST error:', data.error.message);
+              return;
+            }
+            // Persist the Firebase session tokens so the Firebase JS SDK
+            // picks them up on the next auth-state check.
+            var localId = data.localId;
+            var fbToken = data.idToken;
+            var refreshToken = data.refreshToken;
+            var expiresIn = parseInt(data.expiresIn || '3600', 10);
+            var expiresAt = Date.now() + expiresIn * 1000;
+
+            // Firebase SDK (v9 modular) stores the current user under a key
+            // derived from the app's name.  Writing directly to localStorage
+            // replicates what signInWithCredential would do internally.
+            try {
+              var storageKey = 'firebase:authUser:${FIREBASE_WEB_API_KEY}:[DEFAULT]';
+              var userObj = {
+                uid: localId,
+                email: data.email || '',
+                displayName: data.displayName || '',
+                photoURL: data.photoURL || '',
+                emailVerified: data.emailVerified || false,
+                isAnonymous: false,
+                providerData: [{
+                  providerId: 'google.com',
+                  uid: data.rawUserInfo ? JSON.parse(data.rawUserInfo).sub || localId : localId,
+                  displayName: data.displayName || '',
+                  email: data.email || '',
+                  photoURL: data.photoURL || ''
+                }],
+                stsTokenManager: {
+                  refreshToken: refreshToken,
+                  accessToken: fbToken,
+                  expirationTime: expiresAt
+                },
+                createdAt: data.localId,
+                lastLoginAt: Date.now().toString(),
+                apiKey: apiKey,
+                appName: '[DEFAULT]'
+              };
+              localStorage.setItem(storageKey, JSON.stringify(userObj));
+              // Reload the page so the Firebase SDK picks up the stored user
+              window.location.reload();
+            } catch (ex) {
+              console.warn('[JambGenius] Could not persist Firebase session:', ex);
+            }
+          })
+          .catch(function (err) {
+            console.warn('[JambGenius] Google sign-in network error:', err);
+          });
+        });
+      })();
+      true;
+    `);
   }, [pushToken, injectPushToken]);
 
   // ---------------------------------------------------------------------------
@@ -525,6 +684,28 @@ export default function App() {
         localStorage.setItem('isInApp', 'true');
         window.__isJambGeniusApp = true;
       } catch (e) {}
+
+      // ── Google OAuth popup interceptor ───────────────────────────────────
+      // Firebase Auth's signInWithPopup calls window.open() to open
+      // accounts.google.com.  We intercept that and trigger the native Chrome
+      // Custom Tab flow instead, which gives the user their device account
+      // picker and keeps the whole OAuth flow in-app.
+      (function () {
+        var _origOpen = window.open;
+        window.open = function (url, target, features) {
+          if (
+            window.__isJambGeniusApp &&
+            typeof url === 'string' &&
+            (url.indexOf('accounts.google.com/o/oauth2') !== -1 ||
+              url.indexOf('accounts.google.com/signin/oauth') !== -1)
+          ) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'GOOGLE_SIGN_IN' }));
+            // Return a stub so Firebase does not throw on the null-window check
+            return { closed: false, close: function () { this.closed = true; } };
+          }
+          return _origOpen.apply(window, arguments);
+        };
+      })();
 
       // ── Disable text selection / copy / highlight ────────────────────────
       try {
@@ -588,6 +769,14 @@ export default function App() {
 
     if (msg?.type === 'GET_PUSH_TOKEN') {
       if (pushToken) injectPushToken(pushToken);
+      return;
+    }
+
+    // Trigger the native Google Sign-In Chrome Custom Tab.
+    // The PASTE_INTERCEPT_JS window.open interceptor posts this message when the
+    // website's Firebase Auth calls window.open() for a Google OAuth popup.
+    if (msg?.type === 'GOOGLE_SIGN_IN') {
+      googlePromptRef.current?.();
       return;
     }
 
