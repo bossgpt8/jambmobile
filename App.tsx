@@ -586,6 +586,10 @@ export default function App() {
                 ? 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 JambGeniusApp/1.0'
                 : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1 JambGeniusApp/1.0'
             }
+            // Force links/popups that would open a new window (e.g. Google
+            // Sign-In OAuth popup) to load inside this WebView instead of
+            // launching the system browser.  Android-only prop.
+            setSupportMultipleWindows={false}
             // Pull-to-refresh behaviour
             bounces={false}
             overScrollMode="never"
