@@ -18,6 +18,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
@@ -35,7 +36,6 @@ Notifications.setNotificationHandler({
 const OFFLINE_BANNER_COLOR = '#b45309';
 const APP_URL = 'https://jambgenius.app';
 const BRAND_COLOR = '#1a56db';
-const SPLASH_DURATION_MS = 7000;
 
 const CONNECTIVITY_TIMEOUT_MS = 5000;
 // AsyncStorage key used to persist the last successfully visited URL
@@ -68,14 +68,19 @@ const OFFLINE_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-// Hosts allowed to open inside the WebView
-// Google auth domains are included so the OAuth flow completes within the
-// WebView instead of launching an external browser.
+// Hosts allowed to open inside the WebView.
+// Google auth domains are included so the OAuth flow and the Firebase auth
+// callback (*.firebaseapp.com) complete within the WebView instead of
+// launching an external browser.
 const ALLOWED_HOSTS = [
   'jambgenius.app',
   'www.jambgenius.app',
-  'accounts.google.com',
-  'www.google.com',
+  // Google Sign-In / OAuth — match accounts.google.com and any sub-domain
+  'google.com',
+  // Firebase auth handler — the OAuth popup redirects back here after sign-in
+  'firebaseapp.com',
+  // Google APIs used by Firebase Auth (token exchange, identity toolkit, etc.)
+  'googleapis.com',
 ];
 
 function isAllowedHost(url: string): boolean {
@@ -106,11 +111,12 @@ export default function App() {
   const webViewRef = useRef<WebView>(null);
   const previousConnectedRef = useRef<boolean | null>(null);
   const backOnlineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True once the WebView has fired its first onLoad event
+  const webViewReadyRef = useRef(false);
   // Tracks the last URL successfully navigated to, persisted across app restarts
   const lastUrlRef = useRef(APP_URL);
   const [canGoBack, setCanGoBack] = useState(false);
   const [isError, setIsError] = useState(false);
-  const [appReady, setAppReady] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [showBackOnline, setShowBackOnline] = useState(false);
   const [pushToken, setPushToken] = useState<string | null>(null);
@@ -141,10 +147,31 @@ export default function App() {
       }
 
       try {
-        const tokenData = await Notifications.getExpoPushTokenAsync();
+        // projectId is required in Expo SDK 49+ for production builds.
+        // It is read from app.json > extra.eas.projectId (populated by `eas init`).
+        // Constants.easConfig?.projectId is used as a fallback when running inside
+        // an EAS-managed environment where the manifest is provided at runtime.
+        const projectId: string | undefined =
+          Constants.expoConfig?.extra?.eas?.projectId ??
+          Constants.easConfig?.projectId;
+
+        if (!projectId) {
+          console.warn(
+            '[Notifications] EAS projectId not found in app.json (extra.eas.projectId). ' +
+            'Run `eas init` to populate it. Push notifications will not work on ' +
+            'production builds without it.'
+          );
+        }
+
+        const tokenData = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : undefined
+        );
         setPushToken(tokenData.data);
-      } catch {
-        // Physical device required; silently ignore in simulator/emulator
+      } catch (err) {
+        // getExpoPushTokenAsync requires a physical device; it throws in simulators/
+        // emulators.  Configuration errors (bad projectId, missing FCM config, etc.)
+        // are also caught here — the warning above covers the projectId case.
+        console.warn('[Notifications] Could not obtain push token:', err);
       }
     })();
   }, []);
@@ -180,18 +207,11 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Hide the native splash screen once the component is mounted
+  // Hide the native splash screen as soon as the component mounts so the
+  // user goes straight from the Expo splash image to the main app with no
+  // intermediate blank blue frame.
   useEffect(() => {
-    async function prepare() {
-      try {
-        // Keep the splash visible for 7 seconds
-        await new Promise((resolve) => setTimeout(resolve, SPLASH_DURATION_MS));
-      } finally {
-        setAppReady(true);
-        await SplashScreen.hideAsync();
-      }
-    }
-    prepare();
+    SplashScreen.hideAsync().catch(() => {});
   }, []);
 
   // Keep track of connectivity so we can show an offline screen immediately
@@ -364,6 +384,17 @@ export default function App() {
     webViewRef.current?.injectJavaScript(script);
   }, []);
 
+  // Fix the token/WebView load race condition:
+  // If the async token fetch completes AFTER the WebView has already fired its
+  // first onLoad event (the common case), handleWebViewLoad would have found
+  // pushToken===null and skipped injection.  This effect re-injects as soon as
+  // the token becomes available, provided the WebView is already ready.
+  useEffect(() => {
+    if (pushToken && webViewReadyRef.current) {
+      injectPushToken(pushToken);
+    }
+  }, [pushToken, injectPushToken]);
+
   // Handle WebView load errors.
   // When offline: switch to the local offline HTML page so the user sees a
   // branded fallback instead of a blank screen.  The cached site content is
@@ -379,7 +410,53 @@ export default function App() {
   }, [isConnected]);
 
   const handleWebViewLoad = useCallback(() => {
+    // Mark the WebView as ready so the pushToken race-condition effect can
+    // inject the token when it arrives after the first load event.
+    webViewReadyRef.current = true;
+
     if (pushToken) injectPushToken(pushToken);
+
+    // The website's notification-manager.js reads the user ID from
+    // sessionStorage.getItem('currentUser'), but auth-state.js actually stores
+    // the session under the key 'jambgenius_auth_state'.  Patch the method so
+    // it reads from the correct key, then re-trigger token registration.
+    webViewRef.current?.injectJavaScript(`
+      (function () {
+        // Maximum wait time for notificationManager to initialise (250ms × 40 = 10 s)
+        var MAX_PATCH_ATTEMPTS = 40;
+
+        function getUserIdFromSession() {
+          try {
+            var raw = sessionStorage.getItem('jambgenius_auth_state');
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && parsed.uid) return parsed.uid;
+            }
+          } catch (e) {}
+          return null;
+        }
+
+        function patchAndRegister() {
+          var mgr = window.notificationManager;
+          if (!mgr) return false;
+          mgr.getCurrentUserId = getUserIdFromSession;
+          if (window.__expoPushToken) {
+            mgr.registerExpoPushToken(window.__expoPushToken);
+          }
+          return true;
+        }
+
+        if (!patchAndRegister()) {
+          var attempts = 0;
+          var iv = setInterval(function () {
+            if (patchAndRegister() || ++attempts >= MAX_PATCH_ATTEMPTS) {
+              clearInterval(iv);
+            }
+          }, 250);
+        }
+      })();
+      true;
+    `);
   }, [pushToken, injectPushToken]);
 
   // ---------------------------------------------------------------------------
@@ -390,7 +467,9 @@ export default function App() {
   // 1. Marks the session as running inside the JambGenius mobile app so the
   //    website's isApp() / detectApp() checks return true (enables push-token
   //    registration and hides the "download the app" popup).
-  // 2. Intercepts paste events and forwards them to the React Native layer so
+  // 2. Disables text selection and copy/highlight at the WebView layer so the
+  //    protection works regardless of whether content-protection.js has loaded.
+  // 3. Intercepts paste events and forwards them to the React Native layer so
   //    we can read clipboard images natively.
   const PASTE_INTERCEPT_JS = `
     (function () {
@@ -398,6 +477,35 @@ export default function App() {
       try {
         localStorage.setItem('isInApp', 'true');
         window.__isJambGeniusApp = true;
+      } catch (e) {}
+
+      // ── Disable text selection / copy / highlight ────────────────────────
+      try {
+        var noSelStyle = document.createElement('style');
+        noSelStyle.textContent = [
+          '* {',
+          '  -webkit-user-select: none !important;',
+          '  user-select: none !important;',
+          '  -webkit-touch-callout: none !important;',
+          '}',
+          'input, textarea, [contenteditable] {',
+          '  -webkit-user-select: text !important;',
+          '  user-select: text !important;',
+          '}'
+        ].join('');
+        document.head.appendChild(noSelStyle);
+
+        function isEditableTarget(t) {
+          return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+        }
+
+        document.addEventListener('selectstart', function (e) {
+          if (!isEditableTarget(e.target)) e.preventDefault();
+        }, true);
+
+        document.addEventListener('copy', function (e) {
+          if (!isEditableTarget(e.target)) e.preventDefault();
+        }, true);
       } catch (e) {}
 
       // ── Clipboard image paste bridge ─────────────────────────────────────
@@ -480,20 +588,6 @@ export default function App() {
     `;
     webViewRef.current?.injectJavaScript(injectScript);
   }, [pushToken]);
-
-  if (!appReady) {
-    return (
-      <View style={styles.splashContainer}>
-        <ExpoStatusBar style="light" backgroundColor={BRAND_COLOR} />
-        <Image
-          source={require('./assets/splash.png')}
-          style={styles.splashImage}
-          resizeMode="cover"
-          fadeDuration={0}
-        />
-      </View>
-    );
-  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -643,16 +737,6 @@ function ErrorScreen({ onRetry }: ErrorScreenProps) {
 // Styles
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
-  splashContainer: {
-    flex: 1,
-    backgroundColor: BRAND_COLOR,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  splashImage: {
-    width: '100%',
-    height: '100%',
-  },
   safeArea: {
     flex: 1,
     backgroundColor: BRAND_COLOR,
