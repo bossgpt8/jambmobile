@@ -148,16 +148,30 @@ export default function App() {
 
       try {
         // projectId is required in Expo SDK 49+ for production builds.
-        // It is read from app.json > extra.eas.projectId (set via `eas init`).
-        const projectId =
-          Constants.expoConfig?.extra?.eas?.projectId as string | undefined ??
-          (Constants as any).easConfig?.projectId as string | undefined;
+        // It is read from app.json > extra.eas.projectId (populated by `eas init`).
+        // Constants.easConfig?.projectId is used as a fallback when running inside
+        // an EAS-managed environment where the manifest is provided at runtime.
+        const projectId: string | undefined =
+          Constants.expoConfig?.extra?.eas?.projectId ??
+          Constants.easConfig?.projectId;
+
+        if (!projectId) {
+          console.warn(
+            '[Notifications] EAS projectId not found in app.json (extra.eas.projectId). ' +
+            'Run `eas init` to populate it. Push notifications will not work on ' +
+            'production builds without it.'
+          );
+        }
+
         const tokenData = await Notifications.getExpoPushTokenAsync(
           projectId ? { projectId } : undefined
         );
         setPushToken(tokenData.data);
-      } catch {
-        // Physical device required; silently ignore in simulator/emulator
+      } catch (err) {
+        // getExpoPushTokenAsync requires a physical device; it throws in simulators/
+        // emulators.  Configuration errors (bad projectId, missing FCM config, etc.)
+        // are also caught here — the warning above covers the projectId case.
+        console.warn('[Notifications] Could not obtain push token:', err);
       }
     })();
   }, []);
