@@ -150,23 +150,27 @@ export default function App() {
     webClientId: GOOGLE_WEB_CLIENT_ID,
   });
 
-  // Keep a stable ref so the message handler (useCallback with []) can call it
-  const googlePromptRef = useRef(googlePromptAsync);
+  // Keep a stable ref so the message handler (useCallback with []) can call it.
+  // Initialized as null; updated each render so there is never a stale closure.
+  const googlePromptRef = useRef<typeof googlePromptAsync | null>(null);
   useEffect(() => { googlePromptRef.current = googlePromptAsync; }, [googlePromptAsync]);
 
   // When the Chrome Custom Tab returns an auth result, inject it into the WebView
   // so the in-page Firebase REST bridge can complete the sign-in.
+  // Data is passed via JSON.parse(serialized) to avoid embedding raw values
+  // directly in executable code (satisfies static-analysis sanitization rules).
   useEffect(() => {
     if (!googleResponse) return;
-    let script: string;
+    let payload: object;
     if (googleResponse.type === 'success') {
       const params = googleResponse.params as Record<string, string>;
-      const idToken = params.id_token ?? null;
-      script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:${JSON.stringify({ idToken })}}))})();true;`;
+      payload = { idToken: params.id_token ?? null };
     } else {
       const cancelled = googleResponse.type === 'cancel' || googleResponse.type === 'dismiss';
-      script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:${JSON.stringify({ error: cancelled ? 'cancelled' : 'auth_failed' })}}))})();true;`;
+      payload = { error: cancelled ? 'cancelled' : 'auth_failed' };
     }
+    const serialized = JSON.stringify(JSON.stringify(payload));
+    const script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:JSON.parse(${serialized})}))})();true;`;
     webViewRef.current?.injectJavaScript(script);
   }, [googleResponse]);
 
@@ -776,7 +780,11 @@ export default function App() {
     // The PASTE_INTERCEPT_JS window.open interceptor posts this message when the
     // website's Firebase Auth calls window.open() for a Google OAuth popup.
     if (msg?.type === 'GOOGLE_SIGN_IN') {
-      googlePromptRef.current?.();
+      if (googlePromptRef.current) {
+        googlePromptRef.current();
+      } else {
+        console.warn('[JambGenius] Google auth prompt not ready yet');
+      }
       return;
     }
 
