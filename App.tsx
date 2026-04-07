@@ -588,7 +588,7 @@ export default function App() {
             }
             // Force links/popups that would open a new window (e.g. Google
             // Sign-In OAuth popup) to load inside this WebView instead of
-            // launching the system browser.  Android-only prop.
+            // launching the system browser.
             setSupportMultipleWindows={false}
             // Pull-to-refresh behaviour
             bounces={false}
