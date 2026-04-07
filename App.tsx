@@ -474,12 +474,18 @@ export default function App() {
             }
             return;
           }
-          if (directTimer !== null) { clearTimeout(directTimer); directTimer = null; }
+          if (directTimer !== null) {
+            clearTimeout(directTimer);
+            directTimer = null;
+          }
           fetch('/api/notification', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'register-token', userId: userId, expoPushToken: token })
-          }).catch(function () {});
+          }).catch(function (err) {
+            // Non-fatal: token will be re-registered on the next app open
+            console.warn('[JambGenius] Push token registration failed:', err);
+          });
         }
 
         tryRegisterDirectly();
@@ -489,7 +495,10 @@ export default function App() {
         if (!window.__jambTokenListenerAdded) {
           window.__jambTokenListenerAdded = true;
           window.addEventListener('expoPushToken', function (e) {
-            if (e.detail) { directAttempts = 0; tryRegisterDirectly(); }
+            if (e.detail) {
+              directAttempts = 0;
+              tryRegisterDirectly();
+            }
           });
         }
       })();
