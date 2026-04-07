@@ -628,7 +628,7 @@ export default function App() {
             // derived from the app's name.  Writing directly to localStorage
             // replicates what signInWithCredential would do internally.
             try {
-              var storageKey = 'firebase:authUser:${FIREBASE_WEB_API_KEY}:[DEFAULT]';
+              var storageKey = 'firebase:authUser:' + apiKey + ':[DEFAULT]';
               var userObj = {
                 uid: localId,
                 email: data.email || '',
@@ -648,7 +648,7 @@ export default function App() {
                   accessToken: fbToken,
                   expirationTime: expiresAt
                 },
-                createdAt: data.localId,
+                createdAt: Date.now().toString(),
                 lastLoginAt: Date.now().toString(),
                 apiKey: apiKey,
                 appName: '[DEFAULT]'
@@ -704,8 +704,16 @@ export default function App() {
               url.indexOf('accounts.google.com/signin/oauth') !== -1)
           ) {
             window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'GOOGLE_SIGN_IN' }));
-            // Return a stub so Firebase does not throw on the null-window check
-            return { closed: false, close: function () { this.closed = true; } };
+            // Return a stub so Firebase does not throw on the popup-window checks.
+            // Properties/methods are no-ops; Firebase will time out its popup
+            // listener harmlessly while the Chrome Custom Tab completes auth.
+            return {
+              closed: false,
+              close: function () { this.closed = true; },
+              focus: function () {},
+              blur: function () {},
+              location: { href: '' }
+            };
           }
           return _origOpen.apply(window, arguments);
         };
