@@ -33,9 +33,13 @@ SplashScreen.preventAutoHideAsync();
 const ONESIGNAL_APP_ID = 'YOUR_ONESIGNAL_APP_ID';
 
 OneSignal.Debug.setLogLevel(LogLevel.None);
-OneSignal.initialize(ONESIGNAL_APP_ID);
-// Request push permission immediately on app start
-OneSignal.Notifications.requestPermission(true);
+if (ONESIGNAL_APP_ID === 'YOUR_ONESIGNAL_APP_ID') {
+  console.warn('[OneSignal] App ID is not set. Set ONESIGNAL_APP_ID in App.tsx before building.');
+} else {
+  OneSignal.initialize(ONESIGNAL_APP_ID);
+  // Request push permission immediately on app start
+  OneSignal.Notifications.requestPermission(true);
+}
 
 // Amber warning color for the offline banner
 const OFFLINE_BANNER_COLOR = '#b45309';
@@ -145,7 +149,9 @@ export default function App() {
   // window.open interceptor (in PASTE_INTERCEPT_JS) posts a GOOGLE_SIGN_IN
   // message to trigger promptAsync(); the resulting id_token is injected back
   // into the page which completes Firebase sign-in via the REST API bridge.
-  const [, googleResponse, googlePromptAsync] = Google.useAuthRequest({
+  // The first element (auth request object) is unused — we only need the
+  // response and the prompt function.
+  const [_request, googleResponse, googlePromptAsync] = Google.useAuthRequest({
     webClientId: GOOGLE_WEB_CLIENT_ID,
   });
 
@@ -168,6 +174,10 @@ export default function App() {
       const cancelled = googleResponse.type === 'cancel' || googleResponse.type === 'dismiss';
       payload = { error: cancelled ? 'cancelled' : 'auth_failed' };
     }
+    // Double-stringify: outer JSON.stringify produces the string literal
+    // that will appear inside the injected script; JSON.parse at runtime
+    // decodes it back to the original object so the value is never treated
+    // as raw executable code.
     const serialized = JSON.stringify(JSON.stringify(payload));
     const script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:JSON.parse(${serialized})}))})();true;`;
     webViewRef.current?.injectJavaScript(script);
@@ -358,7 +368,9 @@ export default function App() {
               return false;
             }
           }
-        } catch {}
+        } catch (intentParseErr) {
+          console.warn('[JambGenius] Could not parse intent:// fallback URL:', intentParseErr);
+        }
         // No usable in-app fallback — let the OS handle it
         Linking.openURL(url).catch(() => {});
         return false;
