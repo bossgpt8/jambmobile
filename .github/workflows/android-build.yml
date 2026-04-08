@@ -63,6 +63,9 @@ jobs:
           EOF
 
       - name: Generate native Android project
+        env:
+          ONESIGNAL_APP_ID: ${{ secrets.ONESIGNAL_APP_ID }}
+          ONESIGNAL_MODE: production
         run: npx expo prebuild --platform android --no-install --clean
 
       - name: Configure ABI filter
@@ -139,6 +142,8 @@ jobs:
 
       - name: Build release APK
         working-directory: android
+        env:
+          ONESIGNAL_APP_ID: ${{ secrets.ONESIGNAL_APP_ID }}
         run: |
           ./gradlew assembleRelease --no-daemon \
             -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/android/app/release.keystore" \

@@ -17,20 +17,31 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
-import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
+import { OneSignal, LogLevel } from 'react-native-onesignal';
+
+// Allow Chrome Custom Tab to complete the OAuth session when redirected back
+WebBrowser.maybeCompleteAuthSession();
 
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
-// Show notifications as banners even while the app is in the foreground
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+// ── OneSignal ─────────────────────────────────────────────────────────────────
+// The App ID is injected at build time via app.config.js reading the
+// ONESIGNAL_APP_ID environment variable (GitHub Actions secret).
+const ONESIGNAL_APP_ID: string =
+  (Constants.expoConfig?.extra?.oneSignalAppId as string | undefined) ?? '';
+
+OneSignal.Debug.setLogLevel(LogLevel.None);
+if (!ONESIGNAL_APP_ID) {
+  console.warn('[OneSignal] App ID is not set. Set the ONESIGNAL_APP_ID GitHub Actions secret.');
+} else {
+  OneSignal.initialize(ONESIGNAL_APP_ID);
+  // Request push permission immediately on app start
+  OneSignal.Notifications.requestPermission(true);
+}
 
 // Amber warning color for the offline banner
 const OFFLINE_BANNER_COLOR = '#b45309';
@@ -83,6 +94,16 @@ const ALLOWED_HOSTS = [
   'googleapis.com',
 ];
 
+// Firebase Web API key — used by the in-WebView auth bridge to exchange a
+// Google id_token for a Firebase session via the Identity Toolkit REST API.
+// This is a public/publishable value (it is already present in the website's
+// client-side JavaScript bundle).
+const FIREBASE_WEB_API_KEY = 'AIzaSyCSVbZVsBO8luLUT-HznUQe57FGRZ_2U5g';
+
+// Google OAuth web client ID for the JambGenius Firebase project.
+// Used for the native Chrome Custom Tab sign-in path.
+const GOOGLE_WEB_CLIENT_ID = '1057264829205-4o5uiohg7c1jj7nf6ljan53eft0ld2pr.apps.googleusercontent.com';
+
 function isAllowedHost(url: string): boolean {
   try {
     const { hostname } = new URL(url);
@@ -119,79 +140,65 @@ export default function App() {
   const [isError, setIsError] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [showBackOnline, setShowBackOnline] = useState(false);
-  const [pushToken, setPushToken] = useState<string | null>(null);
   // Controls what the WebView displays: the live site URL or the local offline HTML
   const [webViewSource, setWebViewSource] = useState<{ uri: string } | { html: string }>(
     { uri: APP_URL }
   );
 
-  // Request notification permission and obtain the Expo push token
+  // ── Native Google Sign-In (Chrome Custom Tab) ──────────────────────────────
+  // Opens Google OAuth in a Chrome Custom Tab so the user can pick an existing
+  // device account instead of typing credentials manually.  The WebView's
+  // window.open interceptor (in PASTE_INTERCEPT_JS) posts a GOOGLE_SIGN_IN
+  // message to trigger promptAsync(); the resulting id_token is injected back
+  // into the page which completes Firebase sign-in via the REST API bridge.
+  // The first element (auth request object) is unused — we only need the
+  // response and the prompt function.
+  const [_request, googleResponse, googlePromptAsync] = Google.useAuthRequest({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+  });
+
+  // Keep a stable ref so the message handler (useCallback with []) can call it.
+  // Initialized as null; updated each render so there is never a stale closure.
+  const googlePromptRef = useRef<typeof googlePromptAsync | null>(null);
+  useEffect(() => { googlePromptRef.current = googlePromptAsync; }, [googlePromptAsync]);
+
+  // When the Chrome Custom Tab returns an auth result, inject it into the WebView
+  // so the in-page Firebase REST bridge can complete the sign-in.
+  // Data is passed via JSON.parse(serialized) to avoid embedding raw values
+  // directly in executable code (satisfies static-analysis sanitization rules).
   useEffect(() => {
-    (async () => {
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-      if (finalStatus !== 'granted') return;
+    if (!googleResponse) return;
+    let payload: object;
+    if (googleResponse.type === 'success') {
+      const params = googleResponse.params as Record<string, string>;
+      payload = { idToken: params.id_token ?? null };
+    } else {
+      const cancelled = googleResponse.type === 'cancel' || googleResponse.type === 'dismiss';
+      payload = { error: cancelled ? 'cancelled' : 'auth_failed' };
+    }
+    // Double-stringify: outer JSON.stringify produces the string literal
+    // that will appear inside the injected script; JSON.parse at runtime
+    // decodes it back to the original object so the value is never treated
+    // as raw executable code.
+    const serialized = JSON.stringify(JSON.stringify(payload));
+    const script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:JSON.parse(${serialized})}))})();true;`;
+    webViewRef.current?.injectJavaScript(script);
+  }, [googleResponse]);
 
-      // Set up the default Android notification channel
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('default', {
-          name: 'JambGenius',
-          importance: Notifications.AndroidImportance.MAX,
-          vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#1a56db',
-        });
-      }
-
-      try {
-        // projectId is required in Expo SDK 49+ for production builds.
-        // It is read from app.json > extra.eas.projectId (populated by `eas init`).
-        // Constants.easConfig?.projectId is used as a fallback when running inside
-        // an EAS-managed environment where the manifest is provided at runtime.
-        const projectId: string | undefined =
-          Constants.expoConfig?.extra?.eas?.projectId ??
-          Constants.easConfig?.projectId;
-
-        if (!projectId) {
-          console.warn(
-            '[Notifications] EAS projectId not found in app.json (extra.eas.projectId). ' +
-            'Run `eas init` to populate it. Push notifications will not work on ' +
-            'production builds without it.'
-          );
-        }
-
-        const tokenData = await Notifications.getExpoPushTokenAsync(
-          projectId ? { projectId } : undefined
-        );
-        setPushToken(tokenData.data);
-      } catch (err) {
-        // getExpoPushTokenAsync requires a physical device; it throws in simulators/
-        // emulators.  Configuration errors (bad projectId, missing FCM config, etc.)
-        // are also caught here — the warning above covers the projectId case.
-        console.warn('[Notifications] Could not obtain push token:', err);
-      }
-    })();
-  }, []);
-
-  // When a user taps a notification, navigate to the linked URL inside the WebView.
-  // The Jamb website notification-manager sends the deep link as either `url` or
-  // `deepLink` depending on which code path triggered the push, so we check both.
+  // ── OneSignal: navigate to deep-link URL when user taps a notification ──────
   useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response.notification.request.content.data ?? {};
+    OneSignal.Notifications.addEventListener('click', (event) => {
+      const data = (event.notification.additionalData ?? {}) as Record<string, unknown>;
       const url = (data.url ?? data.deepLink) as string | undefined;
-      if (url && webViewRef.current) {
+      if (url) {
         if (isAllowedHost(url)) {
-          webViewRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
+          webViewRef.current?.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
         } else {
           Linking.openURL(url).catch(() => {});
         }
       }
     });
-    return () => subscription.remove();
+    // OneSignal listener removal is handled by the SDK on component unmount
   }, []);
 
   // Restore the last visited URL from persistent storage so the app resumes
@@ -344,6 +351,33 @@ export default function App() {
         Linking.openURL(url).catch(() => {});
         return false;
       }
+
+      // Android intent:// URLs appear during Google OAuth when Google's sign-in
+      // page tries to redirect authentication to Chrome.  Instead of opening the
+      // system browser, extract the S.browser_fallback_url and navigate the
+      // WebView to it directly so the OAuth flow stays in-app.
+      if (url.startsWith('intent://')) {
+        try {
+          const match = url.match(/S\.browser_fallback_url=([^;]+)/);
+          if (match) {
+            const fallback = decodeURIComponent(match[1]);
+            if (isAllowedHost(fallback)) {
+              setTimeout(() => {
+                webViewRef.current?.injectJavaScript(
+                  `window.location.href = ${JSON.stringify(fallback)}; true;`
+                );
+              }, 0);
+              return false;
+            }
+          }
+        } catch (intentParseErr) {
+          console.warn('[JambGenius] Could not parse intent:// fallback URL:', intentParseErr);
+        }
+        // No usable in-app fallback — let the OS handle it
+        Linking.openURL(url).catch(() => {});
+        return false;
+      }
+
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         // Handle deep links / custom schemes
         Linking.openURL(url).catch(() => {});
@@ -372,29 +406,6 @@ export default function App() {
     webViewRef.current?.goBack();
   }, []);
 
-  // Inject the Expo push token into the page (called on load and on demand)
-  const injectPushToken = useCallback((token: string) => {
-    const script = `
-      (function () {
-        window.__expoPushToken = ${JSON.stringify(token)};
-        window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(token)} }));
-        true;
-      })();
-    `;
-    webViewRef.current?.injectJavaScript(script);
-  }, []);
-
-  // Fix the token/WebView load race condition:
-  // If the async token fetch completes AFTER the WebView has already fired its
-  // first onLoad event (the common case), handleWebViewLoad would have found
-  // pushToken===null and skipped injection.  This effect re-injects as soon as
-  // the token becomes available, provided the WebView is already ready.
-  useEffect(() => {
-    if (pushToken && webViewReadyRef.current) {
-      injectPushToken(pushToken);
-    }
-  }, [pushToken, injectPushToken]);
-
   // Handle WebView load errors.
   // When offline: switch to the local offline HTML page so the user sees a
   // branded fallback instead of a blank screen.  The cached site content is
@@ -410,54 +421,97 @@ export default function App() {
   }, [isConnected]);
 
   const handleWebViewLoad = useCallback(() => {
-    // Mark the WebView as ready so the pushToken race-condition effect can
-    // inject the token when it arrives after the first load event.
     webViewReadyRef.current = true;
 
-    if (pushToken) injectPushToken(pushToken);
-
-    // The website's notification-manager.js reads the user ID from
-    // sessionStorage.getItem('currentUser'), but auth-state.js actually stores
-    // the session under the key 'jambgenius_auth_state'.  Patch the method so
-    // it reads from the correct key, then re-trigger token registration.
+    // ── Native Google Sign-In bridge (Firebase REST API) ──────────────────
+    // When the Chrome Custom Tab returns a Google id_token, React Native
+    // dispatches a 'nativeGoogleSignInResult' CustomEvent into the WebView.
+    // This script listens for that event and completes Firebase authentication
+    // via the Identity Toolkit REST API (no Firebase SDK module access needed).
+    // Guard flag prevents duplicate listener registration on page navigations.
     webViewRef.current?.injectJavaScript(`
       (function () {
-        // Maximum wait time for notificationManager to initialise (250ms × 40 = 10 s)
-        var MAX_PATCH_ATTEMPTS = 40;
+        if (window.__nativeGoogleAuthBridgeInstalled) return;
+        window.__nativeGoogleAuthBridgeInstalled = true;
 
-        function getUserIdFromSession() {
-          try {
-            var raw = sessionStorage.getItem('jambgenius_auth_state');
-            if (raw) {
-              var parsed = JSON.parse(raw);
-              if (parsed && parsed.uid) return parsed.uid;
+        window.addEventListener('nativeGoogleSignInResult', function (e) {
+          var detail = e.detail || {};
+          var idToken = detail.idToken;
+          if (!idToken) return; // cancelled or error — Firebase popup will time out cleanly
+
+          var apiKey = ${JSON.stringify(FIREBASE_WEB_API_KEY)};
+
+          fetch(
+            'https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=' + apiKey,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                requestUri: 'http://localhost',
+                postBody: 'id_token=' + encodeURIComponent(idToken) + '&providerId=google.com',
+                returnSecureToken: true,
+                returnIdpCredential: true
+              })
             }
-          } catch (e) {}
-          return null;
-        }
-
-        function patchAndRegister() {
-          var mgr = window.notificationManager;
-          if (!mgr) return false;
-          mgr.getCurrentUserId = getUserIdFromSession;
-          if (window.__expoPushToken) {
-            mgr.registerExpoPushToken(window.__expoPushToken);
-          }
-          return true;
-        }
-
-        if (!patchAndRegister()) {
-          var attempts = 0;
-          var iv = setInterval(function () {
-            if (patchAndRegister() || ++attempts >= MAX_PATCH_ATTEMPTS) {
-              clearInterval(iv);
+          )
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.error) {
+              console.warn('[JambGenius] Google sign-in REST error:', data.error.message);
+              return;
             }
-          }, 250);
-        }
+            // Persist the Firebase session tokens so the Firebase JS SDK
+            // picks them up on the next auth-state check.
+            var localId = data.localId;
+            var fbToken = data.idToken;
+            var refreshToken = data.refreshToken;
+            var expiresIn = parseInt(data.expiresIn || '3600', 10);
+            var expiresAt = Date.now() + expiresIn * 1000;
+
+            // Firebase SDK (v9 modular) stores the current user under a key
+            // derived from the app's name.  Writing directly to localStorage
+            // replicates what signInWithCredential would do internally.
+            try {
+              var storageKey = 'firebase:authUser:' + apiKey + ':[DEFAULT]';
+              var userObj = {
+                uid: localId,
+                email: data.email || '',
+                displayName: data.displayName || '',
+                photoURL: data.photoURL || '',
+                emailVerified: data.emailVerified || false,
+                isAnonymous: false,
+                providerData: [{
+                  providerId: 'google.com',
+                  uid: data.rawUserInfo ? JSON.parse(data.rawUserInfo).sub || localId : localId,
+                  displayName: data.displayName || '',
+                  email: data.email || '',
+                  photoURL: data.photoURL || ''
+                }],
+                stsTokenManager: {
+                  refreshToken: refreshToken,
+                  accessToken: fbToken,
+                  expirationTime: expiresAt
+                },
+                createdAt: Date.now().toString(),
+                lastLoginAt: Date.now().toString(),
+                apiKey: apiKey,
+                appName: '[DEFAULT]'
+              };
+              localStorage.setItem(storageKey, JSON.stringify(userObj));
+              // Reload the page so the Firebase SDK picks up the stored user
+              window.location.reload();
+            } catch (ex) {
+              console.warn('[JambGenius] Could not persist Firebase session:', ex);
+            }
+          })
+          .catch(function (err) {
+            console.warn('[JambGenius] Google sign-in network error:', err);
+          });
+        });
       })();
       true;
     `);
-  }, [pushToken, injectPushToken]);
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Clipboard image paste bridge
@@ -478,6 +532,48 @@ export default function App() {
         localStorage.setItem('isInApp', 'true');
         window.__isJambGeniusApp = true;
       } catch (e) {}
+
+      // ── OneSignal auth bridge ────────────────────────────────────────────
+      // The website calls window.__jambSetUserId(uid) after the user signs in
+      // and window.__jambSetUserId(null) on sign-out.  This tells the native
+      // layer to call OneSignal.login(uid) / OneSignal.logout() so that
+      // push notifications can be targeted by user ID without the website
+      // needing to store or manage any device tokens.
+      window.__jambSetUserId = function (userId) {
+        window.ReactNativeWebView.postMessage(
+          JSON.stringify({ type: 'SET_USER_ID', userId: userId || null })
+        );
+      };
+
+      // ── Google OAuth popup interceptor ───────────────────────────────────
+      // Firebase Auth's signInWithPopup calls window.open() to open
+      // accounts.google.com.  We intercept that and trigger the native Chrome
+      // Custom Tab flow instead, which gives the user their device account
+      // picker and keeps the whole OAuth flow in-app.
+      (function () {
+        var _origOpen = window.open;
+        window.open = function (url, target, features) {
+          if (
+            window.__isJambGeniusApp &&
+            typeof url === 'string' &&
+            (url.indexOf('accounts.google.com/o/oauth2') !== -1 ||
+              url.indexOf('accounts.google.com/signin/oauth') !== -1)
+          ) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'GOOGLE_SIGN_IN' }));
+            // Return a stub so Firebase does not throw on the popup-window checks.
+            // Properties/methods are no-ops; Firebase will time out its popup
+            // listener harmlessly while the Chrome Custom Tab completes auth.
+            return {
+              closed: false,
+              close: function () { this.closed = true; },
+              focus: function () {},
+              blur: function () {},
+              location: { href: '' }
+            };
+          }
+          return _origOpen.apply(window, arguments);
+        };
+      })();
 
       // ── Disable text selection / copy / highlight ────────────────────────
       try {
@@ -532,15 +628,35 @@ export default function App() {
 
   // Called when the WebView posts a message.
   const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
-    let msg: { type: string } | null = null;
+    let msg: { type: string; userId?: string } | null = null;
     try {
       msg = JSON.parse(event.nativeEvent.data);
     } catch {
       return;
     }
 
-    if (msg?.type === 'GET_PUSH_TOKEN') {
-      if (pushToken) injectPushToken(pushToken);
+    // The website posts SET_USER_ID when the auth state changes so the native
+    // layer can call OneSignal.login(userId) / OneSignal.logout() to link the
+    // device subscription to the correct user.  This enables the server to send
+    // notifications by user ID without storing any device tokens itself.
+    if (msg?.type === 'SET_USER_ID') {
+      if (msg.userId) {
+        OneSignal.login(msg.userId);
+      } else {
+        OneSignal.logout();
+      }
+      return;
+    }
+
+    // Trigger the native Google Sign-In Chrome Custom Tab.
+    // The PASTE_INTERCEPT_JS window.open interceptor posts this message when the
+    // website's Firebase Auth calls window.open() for a Google OAuth popup.
+    if (msg?.type === 'GOOGLE_SIGN_IN') {
+      if (googlePromptRef.current) {
+        googlePromptRef.current();
+      } else {
+        console.warn('[JambGenius] Google auth prompt not ready yet');
+      }
       return;
     }
 
@@ -587,7 +703,7 @@ export default function App() {
       true;
     `;
     webViewRef.current?.injectJavaScript(injectScript);
-  }, [pushToken]);
+  }, []);
 
   return (
     <SafeAreaView style={styles.safeArea}>

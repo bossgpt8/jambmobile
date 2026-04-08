@@ -58,11 +58,9 @@
     "plugins": [
       "expo-splash-screen",
       [
-        "expo-notifications",
+        "onesignal-expo-plugin",
         {
-          "icon": "./assets/icon.png",
-          "color": "#1a56db",
-          "defaultChannel": "default"
+          "mode": "development"
         }
       ],
       [
