@@ -17,10 +17,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
-import * as Notifications from 'expo-notifications';
-import Constants from 'expo-constants';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
+import { OneSignal, LogLevel } from 'react-native-onesignal';
 
 // Allow Chrome Custom Tab to complete the OAuth session when redirected back
 WebBrowser.maybeCompleteAuthSession();
@@ -28,14 +27,15 @@ WebBrowser.maybeCompleteAuthSession();
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
-// Show notifications as banners even while the app is in the foreground
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+// ── OneSignal ─────────────────────────────────────────────────────────────────
+// Replace YOUR_ONESIGNAL_APP_ID with your actual OneSignal App ID from
+// https://app.onesignal.com → Your App → Settings → Keys & IDs
+const ONESIGNAL_APP_ID = 'YOUR_ONESIGNAL_APP_ID';
+
+OneSignal.Debug.setLogLevel(LogLevel.None);
+OneSignal.initialize(ONESIGNAL_APP_ID);
+// Request push permission immediately on app start
+OneSignal.Notifications.requestPermission(true);
 
 // Amber warning color for the offline banner
 const OFFLINE_BANNER_COLOR = '#b45309';
@@ -134,7 +134,6 @@ export default function App() {
   const [isError, setIsError] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [showBackOnline, setShowBackOnline] = useState(false);
-  const [pushToken, setPushToken] = useState<string | null>(null);
   // Controls what the WebView displays: the live site URL or the local offline HTML
   const [webViewSource, setWebViewSource] = useState<{ uri: string } | { html: string }>(
     { uri: APP_URL }
@@ -174,73 +173,20 @@ export default function App() {
     webViewRef.current?.injectJavaScript(script);
   }, [googleResponse]);
 
-  // Request notification permission and obtain the Expo push token
+  // ── OneSignal: navigate to deep-link URL when user taps a notification ──────
   useEffect(() => {
-    (async () => {
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-      if (finalStatus !== 'granted') return;
-
-      // Set up the default Android notification channel
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('default', {
-          name: 'JambGenius',
-          importance: Notifications.AndroidImportance.MAX,
-          vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#1a56db',
-        });
-      }
-
-      try {
-        // projectId is required in Expo SDK 49+ for production builds.
-        // It is read from app.json > extra.eas.projectId (populated by `eas init`).
-        // Constants.easConfig?.projectId is used as a fallback when running inside
-        // an EAS-managed environment where the manifest is provided at runtime.
-        const projectId: string | undefined =
-          Constants.expoConfig?.extra?.eas?.projectId ??
-          Constants.easConfig?.projectId;
-
-        if (!projectId) {
-          console.warn(
-            '[Notifications] EAS projectId not found in app.json (extra.eas.projectId). ' +
-            'Run `eas init` to populate it. Push notifications will not work on ' +
-            'production builds without it.'
-          );
-        }
-
-        const tokenData = await Notifications.getExpoPushTokenAsync(
-          projectId ? { projectId } : undefined
-        );
-        setPushToken(tokenData.data);
-      } catch (err) {
-        // getExpoPushTokenAsync requires a physical device; it throws in simulators/
-        // emulators.  Configuration errors (bad projectId, missing FCM config, etc.)
-        // are also caught here — the warning above covers the projectId case.
-        console.warn('[Notifications] Could not obtain push token:', err);
-      }
-    })();
-  }, []);
-
-  // When a user taps a notification, navigate to the linked URL inside the WebView.
-  // The Jamb website notification-manager sends the deep link as either `url` or
-  // `deepLink` depending on which code path triggered the push, so we check both.
-  useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response.notification.request.content.data ?? {};
+    OneSignal.Notifications.addEventListener('click', (event) => {
+      const data = (event.notification.additionalData ?? {}) as Record<string, unknown>;
       const url = (data.url ?? data.deepLink) as string | undefined;
-      if (url && webViewRef.current) {
+      if (url) {
         if (isAllowedHost(url)) {
-          webViewRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
+          webViewRef.current?.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
         } else {
           Linking.openURL(url).catch(() => {});
         }
       }
     });
-    return () => subscription.remove();
+    // OneSignal listener removal is handled by the SDK on component unmount
   }, []);
 
   // Restore the last visited URL from persistent storage so the app resumes
@@ -446,29 +392,6 @@ export default function App() {
     webViewRef.current?.goBack();
   }, []);
 
-  // Inject the Expo push token into the page (called on load and on demand)
-  const injectPushToken = useCallback((token: string) => {
-    const script = `
-      (function () {
-        window.__expoPushToken = ${JSON.stringify(token)};
-        window.dispatchEvent(new CustomEvent('expoPushToken', { detail: ${JSON.stringify(token)} }));
-        true;
-      })();
-    `;
-    webViewRef.current?.injectJavaScript(script);
-  }, []);
-
-  // Fix the token/WebView load race condition:
-  // If the async token fetch completes AFTER the WebView has already fired its
-  // first onLoad event (the common case), handleWebViewLoad would have found
-  // pushToken===null and skipped injection.  This effect re-injects as soon as
-  // the token becomes available, provided the WebView is already ready.
-  useEffect(() => {
-    if (pushToken && webViewReadyRef.current) {
-      injectPushToken(pushToken);
-    }
-  }, [pushToken, injectPushToken]);
-
   // Handle WebView load errors.
   // When offline: switch to the local offline HTML page so the user sees a
   // branded fallback instead of a blank screen.  The cached site content is
@@ -484,100 +407,7 @@ export default function App() {
   }, [isConnected]);
 
   const handleWebViewLoad = useCallback(() => {
-    // Mark the WebView as ready so the pushToken race-condition effect can
-    // inject the token when it arrives after the first load event.
     webViewReadyRef.current = true;
-
-    if (pushToken) injectPushToken(pushToken);
-
-    // Register the Expo push token with the server so push broadcasts reach
-    // this device.  The production site is a React SPA and does not expose a
-    // global notificationManager object, so we register directly via fetch
-    // from inside the WebView.  We also patch window.notificationManager if
-    // it happens to exist (legacy compatibility with the plain-HTML site).
-    webViewRef.current?.injectJavaScript(`
-      (function () {
-        // ── helpers ────────────────────────────────────────────────────────
-        var MAX_PATCH_ATTEMPTS = 40;   // 250 ms × 40 = 10 s
-        var MAX_DIRECT_ATTEMPTS = 60;  // 1 s × 60 = 60 s
-
-        function getUserIdFromSession() {
-          try {
-            var raw = sessionStorage.getItem('jambgenius_auth_state');
-            if (raw) {
-              var parsed = JSON.parse(raw);
-              if (parsed && parsed.uid) return parsed.uid;
-            }
-          } catch (e) {}
-          return null;
-        }
-
-        // ── legacy path: patch notificationManager if present ───────────
-        function patchAndRegister() {
-          var mgr = window.notificationManager;
-          if (!mgr) return false;
-          mgr.getCurrentUserId = getUserIdFromSession;
-          if (window.__expoPushToken) {
-            mgr.registerExpoPushToken(window.__expoPushToken);
-          }
-          return true;
-        }
-
-        if (!patchAndRegister()) {
-          var patchAttempts = 0;
-          var patchIv = setInterval(function () {
-            if (patchAndRegister() || ++patchAttempts >= MAX_PATCH_ATTEMPTS) {
-              clearInterval(patchIv);
-            }
-          }, 250);
-        }
-
-        // ── direct path: register token via fetch (works with React SPA) ─
-        var directAttempts = 0;
-        var directTimer = null;
-
-        function tryRegisterDirectly() {
-          var token = window.__expoPushToken;
-          if (!token) return; // token not injected yet; expoPushToken event will retrigger
-          var userId = getUserIdFromSession();
-          if (!userId) {
-            // User not yet authenticated — retry until auth state is available
-            if (directAttempts < MAX_DIRECT_ATTEMPTS) {
-              directAttempts++;
-              directTimer = setTimeout(tryRegisterDirectly, 1000);
-            }
-            return;
-          }
-          if (directTimer !== null) {
-            clearTimeout(directTimer);
-            directTimer = null;
-          }
-          fetch('/api/notification', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'register-token', userId: userId, expoPushToken: token })
-          }).catch(function (err) {
-            // Non-fatal: token will be re-registered on the next app open
-            console.warn('[JambGenius] Push token registration failed:', err);
-          });
-        }
-
-        tryRegisterDirectly();
-
-        // Listen for the token in case it arrives after this script runs
-        // (guard prevents duplicate listeners on subsequent page navigations)
-        if (!window.__jambTokenListenerAdded) {
-          window.__jambTokenListenerAdded = true;
-          window.addEventListener('expoPushToken', function (e) {
-            if (e.detail) {
-              directAttempts = 0;
-              tryRegisterDirectly();
-            }
-          });
-        }
-      })();
-      true;
-    `);
 
     // ── Native Google Sign-In bridge (Firebase REST API) ──────────────────
     // When the Chrome Custom Tab returns a Google id_token, React Native
@@ -667,7 +497,7 @@ export default function App() {
       })();
       true;
     `);
-  }, [pushToken, injectPushToken]);
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Clipboard image paste bridge
@@ -688,6 +518,18 @@ export default function App() {
         localStorage.setItem('isInApp', 'true');
         window.__isJambGeniusApp = true;
       } catch (e) {}
+
+      // ── OneSignal auth bridge ────────────────────────────────────────────
+      // The website calls window.__jambSetUserId(uid) after the user signs in
+      // and window.__jambSetUserId(null) on sign-out.  This tells the native
+      // layer to call OneSignal.login(uid) / OneSignal.logout() so that
+      // push notifications can be targeted by user ID without the website
+      // needing to store or manage any device tokens.
+      window.__jambSetUserId = function (userId) {
+        window.ReactNativeWebView.postMessage(
+          JSON.stringify({ type: 'SET_USER_ID', userId: userId || null })
+        );
+      };
 
       // ── Google OAuth popup interceptor ───────────────────────────────────
       // Firebase Auth's signInWithPopup calls window.open() to open
@@ -772,15 +614,23 @@ export default function App() {
 
   // Called when the WebView posts a message.
   const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
-    let msg: { type: string } | null = null;
+    let msg: { type: string; userId?: string } | null = null;
     try {
       msg = JSON.parse(event.nativeEvent.data);
     } catch {
       return;
     }
 
-    if (msg?.type === 'GET_PUSH_TOKEN') {
-      if (pushToken) injectPushToken(pushToken);
+    // The website posts SET_USER_ID when the auth state changes so the native
+    // layer can call OneSignal.login(userId) / OneSignal.logout() to link the
+    // device subscription to the correct user.  This enables the server to send
+    // notifications by user ID without storing any device tokens itself.
+    if (msg?.type === 'SET_USER_ID') {
+      if (msg.userId) {
+        OneSignal.login(msg.userId);
+      } else {
+        OneSignal.logout();
+      }
       return;
     }
 
@@ -839,7 +689,7 @@ export default function App() {
       true;
     `;
     webViewRef.current?.injectJavaScript(injectScript);
-  }, [pushToken]);
+  }, []);
 
   return (
     <SafeAreaView style={styles.safeArea}>
