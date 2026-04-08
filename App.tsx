@@ -12,7 +12,7 @@ import {
   Alert,
   AppState,
 } from 'react-native';
-import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
+import { WebView, WebViewNavigation, WebViewMessageEvent, WebViewRenderProcessGoneEvent } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
@@ -420,6 +420,17 @@ export default function App() {
     }
   }, [isConnected]);
 
+  // Handle Android WebView renderer process crashes (OOM, GPU driver crash, etc.).
+  // Without this handler the host app crashes and shows "app has stopped".
+  const handleRenderProcessGone = useCallback(
+    (syntheticEvent: WebViewRenderProcessGoneEvent) => {
+      const { didCrash } = syntheticEvent.nativeEvent;
+      console.warn('[JambGenius] WebView renderer process gone. didCrash:', didCrash);
+      setIsError(true);
+    },
+    []
+  );
+
   const handleWebViewLoad = useCallback(() => {
     webViewReadyRef.current = true;
 
@@ -763,6 +774,12 @@ export default function App() {
                 setIsError(true);
               }
             }}
+            // Prevent the host app from crashing when the WebView renderer process
+            // is killed by the OS (e.g. OOM, GPU driver crash).
+            onRenderProcessGone={handleRenderProcessGone}
+            // Enable DOM storage (localStorage / sessionStorage) on Android.
+            // Required for Firebase auth state persistence and the isInApp flag.
+            domStorageEnabled
             // Session & cookie behaviour
             sharedCookiesEnabled
             thirdPartyCookiesEnabled

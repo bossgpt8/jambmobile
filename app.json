@@ -45,6 +45,7 @@
         "INTERNET",
         "ACCESS_NETWORK_STATE",
         "READ_CLIPBOARD",
+        "CAMERA",
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
         "POST_NOTIFICATIONS",
