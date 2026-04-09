@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "cover",
-      "backgroundColor": "#1a56db"
+      "backgroundColor": "#ffffff"
     },
     "assetBundlePatterns": [
       "assets/icon.png",
@@ -45,6 +45,7 @@
         "INTERNET",
         "ACCESS_NETWORK_STATE",
         "READ_CLIPBOARD",
+        "CAMERA",
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
         "POST_NOTIFICATIONS",

@@ -12,7 +12,7 @@ import {
   Alert,
   AppState,
 } from 'react-native';
-import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
+import { WebView, WebViewNavigation, WebViewMessageEvent, WebViewRenderProcessGoneEvent } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
@@ -136,6 +136,10 @@ export default function App() {
   const webViewReadyRef = useRef(false);
   // Tracks the last URL successfully navigated to, persisted across app restarts
   const lastUrlRef = useRef(APP_URL);
+  // Guards against calling SplashScreen.hideAsync() more than once
+  const splashHiddenRef = useRef(false);
+  // Safety timer — hide the splash after 8 s even if the WebView never fires onLoad
+  const splashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [isError, setIsError] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
@@ -214,12 +218,28 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Hide the native splash screen as soon as the component mounts so the
-  // user goes straight from the Expo splash image to the main app with no
-  // intermediate blank blue frame.
-  useEffect(() => {
+  // Helper: hide the native splash screen exactly once.
+  // Called from onLoad, onError, onRenderProcessGone, and the safety timeout.
+  const hideSplash = useCallback(() => {
+    if (splashHiddenRef.current) return;
+    splashHiddenRef.current = true;
+    if (splashTimeoutRef.current) {
+      clearTimeout(splashTimeoutRef.current);
+      splashTimeoutRef.current = null;
+    }
     SplashScreen.hideAsync().catch(() => {});
   }, []);
+
+  // Start an 8-second safety timeout on mount so the splash never hangs
+  // forever on a very slow connection or when the WebView never fires onLoad.
+  useEffect(() => {
+    splashTimeoutRef.current = setTimeout(hideSplash, 8000);
+    return () => {
+      if (splashTimeoutRef.current) {
+        clearTimeout(splashTimeoutRef.current);
+      }
+    };
+  }, [hideSplash]);
 
   // Keep track of connectivity so we can show an offline screen immediately
   useEffect(() => {
@@ -413,15 +433,30 @@ export default function App() {
   // when there is no cached version available.
   // When online: surface the generic error screen so the user can retry.
   const handleWebViewError = useCallback(() => {
+    hideSplash();
     if (!isConnected) {
       setWebViewSource({ html: OFFLINE_HTML });
     } else {
       setIsError(true);
     }
-  }, [isConnected]);
+  }, [isConnected, hideSplash]);
+
+  // Handle Android WebView renderer process crashes (OOM, GPU driver crash, etc.).
+  // Without this handler the host app crashes and shows "app has stopped".
+  const handleRenderProcessGone = useCallback(
+    (syntheticEvent: WebViewRenderProcessGoneEvent) => {
+      const { didCrash } = syntheticEvent.nativeEvent;
+      console.warn('[JambGenius] WebView renderer process gone. didCrash:', didCrash);
+      hideSplash();
+      setIsError(true);
+    },
+    [hideSplash]
+  );
 
   const handleWebViewLoad = useCallback(() => {
     webViewReadyRef.current = true;
+    // Dismiss the native splash screen now that the site has finished loading.
+    hideSplash();
 
     // ── Native Google Sign-In bridge (Firebase REST API) ──────────────────
     // When the Chrome Custom Tab returns a Google id_token, React Native
@@ -763,6 +798,12 @@ export default function App() {
                 setIsError(true);
               }
             }}
+            // Prevent the host app from crashing when the WebView renderer process
+            // is killed by the OS (e.g. OOM, GPU driver crash).
+            onRenderProcessGone={handleRenderProcessGone}
+            // Enable DOM storage (localStorage / sessionStorage) on Android.
+            // Required for Firebase auth state persistence and the isInApp flag.
+            domStorageEnabled
             // Session & cookie behaviour
             sharedCookiesEnabled
             thirdPartyCookiesEnabled
