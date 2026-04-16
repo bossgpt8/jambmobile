@@ -214,8 +214,12 @@ export default function App() {
   // ── OneSignal: navigate to deep-link URL when user taps a notification ──────
   useEffect(() => {
     if (!OneSignal) return;
-    OneSignal.Notifications.addEventListener('click', (event: { notification: { additionalData?: Record<string, unknown> } }) => {
-      const data = (event.notification.additionalData ?? {}) as Record<string, unknown>;
+    OneSignal.Notifications.addEventListener('click', (event) => {
+      const rawData = event.notification.additionalData;
+      const data =
+        rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+          ? (rawData as Record<string, unknown>)
+          : {};
       const url = (data.url ?? data.deepLink) as string | undefined;
       if (url) {
         if (isAllowedHost(url)) {
