@@ -12,7 +12,7 @@ import {
   Alert,
   AppState,
 } from 'react-native';
-import { WebView, WebViewNavigation, WebViewMessageEvent, WebViewRenderProcessGoneEvent } from 'react-native-webview';
+import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
@@ -20,7 +20,6 @@ import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
-import { OneSignal, LogLevel } from 'react-native-onesignal';
 
 // Allow Chrome Custom Tab to complete the OAuth session when redirected back
 WebBrowser.maybeCompleteAuthSession();
@@ -34,14 +33,22 @@ SplashScreen.preventAutoHideAsync();
 const ONESIGNAL_APP_ID: string =
   (Constants.expoConfig?.extra?.oneSignalAppId as string | undefined) ?? '';
 
-OneSignal.Debug.setLogLevel(LogLevel.None);
-if (!ONESIGNAL_APP_ID) {
-  console.warn('[OneSignal] App ID is not set. Set the ONESIGNAL_APP_ID GitHub Actions secret.');
-} else {
-  OneSignal.initialize(ONESIGNAL_APP_ID);
-  // Request push permission immediately on app start
-  OneSignal.Notifications.requestPermission(true);
+type OneSignalModule = typeof import('react-native-onesignal');
+let oneSignalModule: OneSignalModule | null = null;
+try {
+  // Keep startup resilient on environments where the native module is unavailable
+  // (for example, Expo Go), so the app does not crash on launch.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  oneSignalModule = require('react-native-onesignal') as OneSignalModule;
+} catch {
+  oneSignalModule = null;
 }
+const OneSignal = oneSignalModule?.OneSignal;
+const OneSignalLogLevel = oneSignalModule?.LogLevel;
+
+type WebViewRenderProcessGoneEvent = {
+  nativeEvent: { didCrash: boolean };
+};
 
 // Amber warning color for the offline banner
 const OFFLINE_BANNER_COLOR = '#b45309';
@@ -189,10 +196,30 @@ export default function App() {
     webViewRef.current?.injectJavaScript(script);
   }, [googleResponse]);
 
+  // ── OneSignal initialization ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!OneSignal || !OneSignalLogLevel) {
+      console.warn('[OneSignal] Native module unavailable; push notifications are disabled in this build.');
+      return;
+    }
+    OneSignal.Debug.setLogLevel(OneSignalLogLevel.None);
+    if (!ONESIGNAL_APP_ID) {
+      console.warn('[OneSignal] App ID is not set. Set the ONESIGNAL_APP_ID GitHub Actions secret.');
+      return;
+    }
+    OneSignal.initialize(ONESIGNAL_APP_ID);
+    OneSignal.Notifications.requestPermission(true);
+  }, []);
+
   // ── OneSignal: navigate to deep-link URL when user taps a notification ──────
   useEffect(() => {
+    if (!OneSignal) return;
     OneSignal.Notifications.addEventListener('click', (event) => {
-      const data = (event.notification.additionalData ?? {}) as Record<string, unknown>;
+      const rawData = event.notification.additionalData;
+      const data =
+        rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+          ? (rawData as Record<string, unknown>)
+          : {};
       const url = (data.url ?? data.deepLink) as string | undefined;
       if (url) {
         if (isAllowedHost(url)) {
@@ -675,6 +702,7 @@ export default function App() {
     // device subscription to the correct user.  This enables the server to send
     // notifications by user ID without storing any device tokens itself.
     if (msg?.type === 'SET_USER_ID') {
+      if (!OneSignal) return;
       if (msg.userId) {
         OneSignal.login(msg.userId);
       } else {
