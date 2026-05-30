@@ -13,7 +13,6 @@ import {
   AppState,
 } from 'react-native';
 import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
-import * as WebBrowser from 'expo-web-browser';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as SplashScreen from 'expo-splash-screen';
@@ -352,29 +351,7 @@ export default function App() {
         url.includes('oauth2.googleapis.com') ||
         url.includes('googleusercontent.com')
       ) {
-        (async () => {
-          try {
-            const scheme = (Constants.expoConfig && (Constants.expoConfig as any).scheme) || 'jambgenius';
-            const returnUrl = `${scheme}://auth`;
-            const result = await WebBrowser.openAuthSessionAsync(url, returnUrl);
-            if (result.type === 'success' && result.url) {
-              try {
-                const parsed = new URL(result.url);
-                const params: Record<string, string> = {};
-                parsed.searchParams.forEach((v, k) => { params[k] = v; });
-                // If an id_token is present, inject it into the WebView so the
-                // website can complete authentication client-side.
-                if (params.id_token) {
-                  const serialized = JSON.stringify(JSON.stringify({ idToken: params.id_token }));
-                  const script = `(function(){window.dispatchEvent(new CustomEvent('nativeGoogleSignInResult',{detail:JSON.parse(${serialized})}))})();true;`;
-                  webViewRef.current?.injectJavaScript(script);
-                }
-              } catch (e) {
-                // ignore parse errors
-              }
-            }
-          } catch (e) {}
-        })();
+        Linking.openURL(url).catch(() => {});
         return false;
       }
       if (
