@@ -20,7 +20,7 @@
     "onesignal-expo-plugin": "^2.6.0",
     "react": "18.2.0",
     "react-native": "0.74.5",
-    "react-native-onesignal": "^5.4.6",
+    "react-native-onesignal": "5.3.6",
     "react-native-webview": "13.8.6"
   },
   "devDependencies": {
