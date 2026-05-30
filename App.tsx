@@ -20,6 +20,17 @@ import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 
+// OneSignal native integration (optional): require safely so the app does not
+// crash in environments without the native module (e.g. web or Expo Go).
+let OneSignalModule: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  OneSignalModule = require('react-native-onesignal');
+} catch {
+  OneSignalModule = null;
+}
+const OneSignal = OneSignalModule ? (OneSignalModule.default || OneSignalModule) : null;
+
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
@@ -178,6 +189,51 @@ export default function App() {
         console.warn('[Notifications] Could not obtain push token:', err);
       }
     })();
+  }, []);
+
+  // Initialize OneSignal (native) when available and configured.
+  useEffect(() => {
+    const oneSignalAppId: string | undefined =
+      (Constants.expoConfig && (Constants.expoConfig as any).extra && (Constants.expoConfig as any).extra.oneSignalAppId) ||
+      (process.env.ONESIGNAL_APP_ID as string | undefined);
+
+    if (!OneSignal || !oneSignalAppId) return;
+
+    try {
+      // Set the OneSignal App ID for the native SDK.
+      if (typeof OneSignal.setAppId === 'function') {
+        OneSignal.setAppId(oneSignalAppId);
+      } else if (typeof OneSignal.init === 'function') {
+        // Older versions use init
+        OneSignal.init(oneSignalAppId);
+      }
+
+      // Optional: prompt iOS users for push permission via OneSignal
+      try {
+        if (typeof OneSignal.promptForPushNotificationsWithUserResponse === 'function') {
+          OneSignal.promptForPushNotificationsWithUserResponse(() => {});
+        }
+      } catch {}
+
+      // Handle notification opened events and forward deep links to the WebView
+      if (typeof OneSignal.setNotificationOpenedHandler === 'function') {
+        OneSignal.setNotificationOpenedHandler((openedEvent: any) => {
+          try {
+            const data = (openedEvent && openedEvent.notification && openedEvent.notification.additionalData) || {};
+            const url = data.url || data.deepLink;
+            if (url && webViewRef.current) {
+              if (isAllowedHost(url)) {
+                webViewRef.current.injectJavaScript(`window.location.href = ${JSON.stringify(url)}; true;`);
+              } else {
+                Linking.openURL(url).catch(() => {});
+              }
+            }
+          } catch (e) {}
+        });
+      }
+    } catch (e) {
+      console.warn('[OneSignal] initialization failed', e);
+    }
   }, []);
 
   // When a user taps a notification, navigate to the linked URL inside the WebView.
