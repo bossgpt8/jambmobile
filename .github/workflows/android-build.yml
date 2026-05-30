@@ -10,7 +10,7 @@ on:
       architecture:
         description: 'Target CPU architecture'
         required: false
-        default: 'all'
+        default: 'armeabi-v7a'
         type: choice
         options:
           - all
@@ -94,14 +94,15 @@ jobs:
           f = Path('android/settings.gradle')
           content = f.read_text()
           import_line = 'import com.facebook.react.ReactSettingsExtension\n'
-          original_block = '''extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
-  if (System.getenv('EXPO_USE_COMMUNITY_AUTOLINKING') == '1') {
-    ex.autolinkLibrariesFromCommand()
-  } else {
-    ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)
-  }
-}
-'''
+          original_block = (
+              'extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->\n'
+              "  if (System.getenv('EXPO_USE_COMMUNITY_AUTOLINKING') == '1') {\n"
+              '    ex.autolinkLibrariesFromCommand()\n'
+              '  } else {\n'
+              '    ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)\n'
+              '  }\n'
+              '}\n'
+          )
           updated_content = content.replace(import_line, '')
           updated_content = updated_content.replace(original_block, '')
           if updated_content != content:
