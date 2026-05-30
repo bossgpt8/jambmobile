@@ -16,6 +16,7 @@ on:
           - all
           - arm64-v8a
           - armeabi-v7a
+          - armeabi-v7a+arm64-v8a
           - x86
           - x86_64
 
@@ -62,9 +63,6 @@ jobs:
           EOF
 
       - name: Generate native Android project
-        env:
-          ONESIGNAL_APP_ID: ${{ secrets.ONESIGNAL_APP_ID }}
-          ONESIGNAL_MODE: production
         run: npx expo prebuild --platform android --no-install --clean
 
       - name: Configure ABI filter
@@ -77,18 +75,20 @@ jobs:
             python3 - <<'PYEOF'
           import re, os
           abi = os.environ['TARGET_ABI']
+          # Support combined architectures separated by '+', e.g. "armeabi-v7a+arm64-v8a"
+          abi_filters = ', '.join(f'"{a}"' for a in abi.split('+'))
           f = 'android/app/build.gradle'
           content = open(f).read()
           # Inject ndk.abiFilters inside the defaultConfig block so only the
-          # requested ABI is included, producing a smaller architecture-specific APK.
+          # requested ABI(s) are included, producing a smaller APK.
           content = re.sub(
               r'(defaultConfig\s*\{)',
-              r'\1\n        ndk { abiFilters "' + abi + '" }',
+              r'\1\n        ndk { abiFilters ' + abi_filters + ' }',
               content,
               count=1,
           )
           open(f, 'w').write(content)
-          print(f'ABI filter set to: {abi}')
+          print(f'ABI filter set to: {abi_filters}')
           PYEOF
           fi
 
@@ -139,8 +139,6 @@ jobs:
 
       - name: Build release APK
         working-directory: android
-        env:
-          ONESIGNAL_APP_ID: ${{ secrets.ONESIGNAL_APP_ID }}
         run: |
           ./gradlew assembleRelease --no-daemon \
             -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/android/app/release.keystore" \

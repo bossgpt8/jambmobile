@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "cover",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#1a56db"
     },
     "assetBundlePatterns": [
       "assets/icon.png",
@@ -45,7 +45,6 @@
         "INTERNET",
         "ACCESS_NETWORK_STATE",
         "READ_CLIPBOARD",
-        "CAMERA",
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
         "POST_NOTIFICATIONS",
@@ -59,9 +58,11 @@
     "plugins": [
       "expo-splash-screen",
       [
-        "onesignal-expo-plugin",
+        "expo-notifications",
         {
-          "mode": "development"
+          "icon": "./assets/icon.png",
+          "color": "#1a56db",
+          "defaultChannel": "default"
         }
       ],
       [
@@ -71,8 +72,8 @@
             "compileSdkVersion": 34,
             "targetSdkVersion": 34,
             "minSdkVersion": 23,
-            "enableProguardInReleaseBuilds": false,
-            "enableShrinkResourcesInReleaseBuilds": false
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
           },
           "ios": {}
         }
