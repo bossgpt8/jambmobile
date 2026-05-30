@@ -101,7 +101,7 @@ jobs:
           f = Path('android/gradle/wrapper/gradle-wrapper.properties')
           content = f.read_text()
           pattern = r'distributionUrl=https\\://services\.gradle\.org/distributions/gradle-[0-9.]+-(bin|all)\.zip'
-            new_content, count = re.subn(
+          new_content, count = re.subn(
               pattern,
               r'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-\1.zip',
               content,
