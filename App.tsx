@@ -11,6 +11,7 @@ import {
   SafeAreaView,
   Alert,
   AppState,
+  Modal,
 } from 'react-native';
 import { WebView, WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -135,6 +136,7 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(true);
   const [showBackOnline, setShowBackOnline] = useState(false);
   const [pushToken, setPushToken] = useState<string | null>(null);
+  const [showNotifyModal, setShowNotifyModal] = useState(false);
   // Controls what the WebView displays: the live site URL or the local offline HTML
   const [webViewSource, setWebViewSource] = useState<{ uri: string } | { html: string }>(
     { uri: APP_URL }
@@ -143,15 +145,43 @@ export default function App() {
   // Request notification permission and obtain the Expo push token
   useEffect(() => {
     (async () => {
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
+      const existing = await Notifications.getPermissionsAsync();
+      if (existing.status === 'granted') {
+        // Already granted — set up channel and fetch token.
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('default', {
+            name: 'JambGenius',
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: '#1a56db',
+          });
+        }
+        try {
+          const projectId: string | undefined =
+            Constants.expoConfig?.extra?.eas?.projectId ??
+            Constants.easConfig?.projectId;
+          const tokenData = await Notifications.getExpoPushTokenAsync(
+            projectId ? { projectId } : undefined
+          );
+          setPushToken(tokenData.data);
+        } catch (err) {
+          console.warn('[Notifications] Could not obtain push token:', err);
+        }
+        return;
       }
-      if (finalStatus !== 'granted') return;
 
-      // Set up the default Android notification channel
+      // If the user has not been prompted before, show the in-app pre-permission modal.
+      try {
+        const prompted = await AsyncStorage.getItem('notificationsPrompted');
+        if (!prompted) {
+          setShowNotifyModal(true);
+          return;
+        }
+      } catch {}
+
+      // Otherwise request directly.
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') return;
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('default', {
           name: 'JambGenius',
@@ -160,35 +190,60 @@ export default function App() {
           lightColor: '#1a56db',
         });
       }
-
       try {
-        // projectId is required in Expo SDK 49+ for production builds.
-        // It is read from app.json > extra.eas.projectId (populated by `eas init`).
-        // Constants.easConfig?.projectId is used as a fallback when running inside
-        // an EAS-managed environment where the manifest is provided at runtime.
         const projectId: string | undefined =
           Constants.expoConfig?.extra?.eas?.projectId ??
           Constants.easConfig?.projectId;
-
-        if (!projectId) {
-          console.warn(
-            '[Notifications] EAS projectId not found in app.json (extra.eas.projectId). ' +
-            'Run `eas init` to populate it. Push notifications will not work on ' +
-            'production builds without it.'
-          );
-        }
-
         const tokenData = await Notifications.getExpoPushTokenAsync(
           projectId ? { projectId } : undefined
         );
         setPushToken(tokenData.data);
       } catch (err) {
-        // getExpoPushTokenAsync requires a physical device; it throws in simulators/
-        // emulators.  Configuration errors (bad projectId, missing FCM config, etc.)
-        // are also caught here — the warning above covers the projectId case.
         console.warn('[Notifications] Could not obtain push token:', err);
       }
     })();
+  }, []);
+
+  // Request flow invoked from the pre-permission modal: call OneSignal if
+  // available, otherwise fall back to expo-notifications.
+  const requestNotificationsFromUser = useCallback(async () => {
+    // Persist that we've asked the user so we don't show the modal again.
+    try { await AsyncStorage.setItem('notificationsPrompted', 'true'); } catch {}
+    setShowNotifyModal(false);
+
+    if (OneSignal && typeof OneSignal.promptForPushNotificationsWithUserResponse === 'function') {
+      // Wrap OneSignal prompt in a promise to await the result.
+      const granted = await new Promise<boolean>((resolve) => {
+        try {
+          OneSignal.promptForPushNotificationsWithUserResponse((resp: boolean) => resolve(!!resp));
+        } catch (e) { resolve(false); }
+      });
+      if (!granted) return;
+    } else {
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') return;
+    }
+
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'JambGenius',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#1a56db',
+      });
+    }
+
+    try {
+      const projectId: string | undefined =
+        Constants.expoConfig?.extra?.eas?.projectId ??
+        Constants.easConfig?.projectId;
+      const tokenData = await Notifications.getExpoPushTokenAsync(
+        projectId ? { projectId } : undefined
+      );
+      setPushToken(tokenData.data);
+    } catch (err) {
+      console.warn('[Notifications] Could not obtain push token after prompt:', err);
+    }
   }, []);
 
   // Initialize OneSignal (native) when available and configured.
@@ -663,6 +718,32 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <ExpoStatusBar style="dark" backgroundColor="#ffffff" />
 
+      {/* Pre-permission modal: explains why notifications help and triggers the OS prompt */}
+      <Modal visible={showNotifyModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Enable notifications</Text>
+            <Text style={styles.modalBody}>
+              Get important updates and reminders from JambGenius. You can change this later in settings.
+            </Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonSecondary]}
+                onPress={() => { setShowNotifyModal(false); AsyncStorage.setItem('notificationsPrompted', 'true').catch(()=>{}); }}
+              >
+                <Text style={styles.modalButtonText}>Maybe later</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonPrimary]}
+                onPress={() => { requestNotificationsFromUser(); }}
+              >
+                <Text style={[styles.modalButtonText, { color: '#fff' }]}>Enable</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Offline banner – shown whenever connectivity is lost; disappears when back online */}
       {!isConnected && (
         <View style={styles.offlineBanner}>
@@ -840,6 +921,61 @@ const styles = StyleSheet.create({
   },
   webView: {
     flex: 1,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 520,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+    color: '#111827',
+  },
+  modalBody: {
+    fontSize: 15,
+    color: '#374151',
+    marginBottom: 18,
+    lineHeight: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  modalButton: {
+    minWidth: 100,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonPrimary: {
+    backgroundColor: BRAND_COLOR,
+  },
+  modalButtonSecondary: {
+    backgroundColor: '#f3f4f6',
+  },
+  modalButtonText: {
+    fontSize: 15,
+    color: '#111827',
+    fontWeight: '600',
   },
   errorContainer: {
     flex: 1,
