@@ -83,6 +83,48 @@ jobs:
               print('expo-modules-autolinking SettingsManager.kt: pattern not found, skipping patch')
           EOF
 
+          - name: Patch expo-modules-core for Gradle compatibility
+          run: |
+            python3 - <<'EOF'
+            from pathlib import Path
+
+            replacements = {
+              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/gradle/ExpoModuleExtension.kt': [
+                ('import org.gradle.internal.extensions.core.extra\n', ''),
+                ('    return project.rootProject.extra.safeGet<Any>(name) ?: default\n', '    return project.rootProject.extensions.extraProperties.safeGet<Any>(name) ?: default\n'),
+              ],
+              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ProjectConfiguration.kt': [
+                ('import org.gradle.internal.extensions.core.extra\n', ''),
+                ('  extra.set("kotlinVersion", kotlinVersion)\n', '  project.extensions.extraProperties.set("kotlinVersion", kotlinVersion)\n'),
+                ('  extra.set("kspVersion", kspVersion)\n', '  project.extensions.extraProperties.set("kspVersion", kspVersion)\n'),
+                ('      compileSdk = rootProject.extra.safeGet("compileSdkVersion")\n', '      compileSdk = rootProject.extensions.extraProperties.safeGet("compileSdkVersion")\n'),
+                ('      minSdk = rootProject.extra.safeGet("minSdkVersion")\n', '      minSdk = rootProject.extensions.extraProperties.safeGet("minSdkVersion")\n'),
+                ('      targetSdk = rootProject.extra.safeGet("targetSdkVersion")\n', '      targetSdk = rootProject.extensions.extraProperties.safeGet("targetSdkVersion")\n'),
+              ],
+              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ExpoModulesGradlePlugin.kt': [
+                ('import org.gradle.internal.extensions.core.extra\n', ''),
+                ('    return project.rootProject.extra.safeGet<String>("kotlinVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kotlinVersion")\n'),
+                ('    return project.rootProject.extra.safeGet<String>("kspVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kspVersion")\n'),
+              ],
+            }
+
+            changed = False
+            for file_path, file_replacements in replacements.items():
+              path = Path(file_path)
+              content = path.read_text()
+              updated_content = content
+              for old, new in file_replacements:
+                updated_content = updated_content.replace(old, new)
+              if updated_content != content:
+                path.write_text(updated_content)
+                changed = True
+
+            if changed:
+              print('Patched expo-modules-core Gradle plugin sources for compatibility')
+            else:
+              print('expo-modules-core Gradle plugin sources: pattern not found, skipping patch')
+            EOF
+
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
 
@@ -129,66 +171,47 @@ jobs:
           # Inject ndk.abiFilters inside the defaultConfig block so only the
           # requested ABI(s) are included, producing a smaller APK.
           content = re.sub(
-              r'(defaultConfig\s*\{)',
-              r'\1\n        ndk { abiFilters ' + abi_filters + ' }',
-              content,
-              count=1,
-          )
-          open(f, 'w').write(content)
-          print(f'ABI filter set to: {abi_filters}')
-          PYEOF
-          fi
-
-      - name: Pin Gradle wrapper to 8.7 for expo-modules compatibility
+      - name: Patch expo-modules-core for Gradle compatibility
         run: |
-          python3 - <<'PYEOF'
-          import re
+          python3 - <<'EOF'
           from pathlib import Path
 
-          f = Path('android/gradle/wrapper/gradle-wrapper.properties')
-          content = f.read_text()
-          pattern = r'distributionUrl=https\\://services\.gradle\.org/distributions/gradle-[0-9.]+-(bin|all)\.zip'
-          new_content, count = re.subn(
-              pattern,
-              r'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.7-\1.zip',
-              content,
-          )
-          if count:
-              f.write_text(new_content)
-              print('Pinned Gradle wrapper to 8.7')
+          files = {
+              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/gradle/ExpoModuleExtension.kt': [
+                  ('import org.gradle.internal.extensions.core.extra\n', ''),
+                  ('    return project.rootProject.extra.safeGet<Any>(name) ?: default\n', '    return project.rootProject.extensions.extraProperties.safeGet<Any>(name) ?: default\n'),
+              ],
+              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ProjectConfiguration.kt': [
+                  ('import org.gradle.internal.extensions.core.extra\n', ''),
+                  ('  extra.set("kotlinVersion", kotlinVersion)\n', '  project.extensions.extraProperties.set("kotlinVersion", kotlinVersion)\n'),
+                  ('  extra.set("kspVersion", kspVersion)\n', '  project.extensions.extraProperties.set("kspVersion", kspVersion)\n'),
+                  ('      compileSdk = rootProject.extra.safeGet("compileSdkVersion")\n', '      compileSdk = rootProject.extensions.extraProperties.safeGet("compileSdkVersion")\n'),
+                  ('      minSdk = rootProject.extra.safeGet("minSdkVersion")\n', '      minSdk = rootProject.extensions.extraProperties.safeGet("minSdkVersion")\n'),
+                  ('      targetSdk = rootProject.extra.safeGet("targetSdkVersion")\n', '      targetSdk = rootProject.extensions.extraProperties.safeGet("targetSdkVersion")\n'),
+              ],
+              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ExpoModulesGradlePlugin.kt': [
+                  ('import org.gradle.internal.extensions.core.extra\n', ''),
+                  ('    return project.rootProject.extra.safeGet<String>("kotlinVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kotlinVersion")\n'),
+                  ('    return project.rootProject.extra.safeGet<String>("kspVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kspVersion")\n'),
+              ],
+          }
+
+          changed = False
+          for file_path, replacements in files.items():
+              path = Path(file_path)
+              content = path.read_text()
+              updated_content = content
+              for old, new in replacements:
+                  updated_content = updated_content.replace(old, new)
+              if updated_content != content:
+                  path.write_text(updated_content)
+                  changed = True
+
+          if changed:
+              print('Patched expo-modules-core Gradle plugin sources for compatibility')
           else:
-              print('Gradle wrapper URL not found, leaving file unchanged')
-          PYEOF
-          grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
-
-      - name: Write google-services.json
-        run: echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 --decode > android/app/google-services.json
-
-      - name: Decode keystore
-        run: |
-          # Strip carriage returns to handle base64 encoded on Windows, then decode
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '\r' | base64 --decode > android/app/release.keystore
-          # Validate that the decoded file is non-empty; a 0-byte file means
-          # KEYSTORE_BASE64 is unset/empty, which causes keytool to throw EOFException.
-          if [ ! -s android/app/release.keystore ]; then
-            echo "Error: release.keystore is empty after decoding." >&2
-            echo "Ensure the KEYSTORE_BASE64 repository secret is set and contains a valid base64-encoded keystore." >&2
-            exit 1
-          fi
-          echo "Keystore decoded successfully ($(wc -c < android/app/release.keystore) bytes)"
-
-      - name: Convert keystore to PKCS12 for Java 17 compatibility
-        run: |
-          # Java 17 restricts legacy key-protection algorithms (e.g. PBEWithMD5AndDES)
-          # used by older JKS keystores, causing UnrecoverableKeyException: null.
-          # Re-encoding as PKCS12 uses modern AES-256 key protection that Java 17 supports.
-          # -srcstoretype is intentionally omitted so keytool auto-detects JKS or PKCS12.
-          keytool -importkeystore \
-            -srckeystore android/app/release.keystore \
-            -srcstorepass "${{ secrets.STORE_PASSWORD }}" \
-            -destkeystore android/app/release.keystore.pkcs12 \
-            -deststoretype PKCS12 \
-            -deststorepass "${{ secrets.STORE_PASSWORD }}" \
+              print('expo-modules-core Gradle plugin sources: pattern not found, skipping patch')
+          EOF
             -destkeypass "${{ secrets.KEY_PASSWORD }}" \
             -noprompt
           if [ ! -f android/app/release.keystore.pkcs12 ]; then
