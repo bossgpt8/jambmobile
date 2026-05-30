@@ -83,47 +83,47 @@ jobs:
               print('expo-modules-autolinking SettingsManager.kt: pattern not found, skipping patch')
           EOF
 
-          - name: Patch expo-modules-core for Gradle compatibility
-          run: |
-            python3 - <<'EOF'
-            from pathlib import Path
+      - name: Patch expo-modules-core for Gradle compatibility
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
 
-            replacements = {
-              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/gradle/ExpoModuleExtension.kt': [
-                ('import org.gradle.internal.extensions.core.extra\n', ''),
-                ('    return project.rootProject.extra.safeGet<Any>(name) ?: default\n', '    return project.rootProject.extensions.extraProperties.safeGet<Any>(name) ?: default\n'),
-              ],
-              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ProjectConfiguration.kt': [
-                ('import org.gradle.internal.extensions.core.extra\n', ''),
-                ('  extra.set("kotlinVersion", kotlinVersion)\n', '  project.extensions.extraProperties.set("kotlinVersion", kotlinVersion)\n'),
-                ('  extra.set("kspVersion", kspVersion)\n', '  project.extensions.extraProperties.set("kspVersion", kspVersion)\n'),
-                ('      compileSdk = rootProject.extra.safeGet("compileSdkVersion")\n', '      compileSdk = rootProject.extensions.extraProperties.safeGet("compileSdkVersion")\n'),
-                ('      minSdk = rootProject.extra.safeGet("minSdkVersion")\n', '      minSdk = rootProject.extensions.extraProperties.safeGet("minSdkVersion")\n'),
-                ('      targetSdk = rootProject.extra.safeGet("targetSdkVersion")\n', '      targetSdk = rootProject.extensions.extraProperties.safeGet("targetSdkVersion")\n'),
-              ],
-              'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ExpoModulesGradlePlugin.kt': [
-                ('import org.gradle.internal.extensions.core.extra\n', ''),
-                ('    return project.rootProject.extra.safeGet<String>("kotlinVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kotlinVersion")\n'),
-                ('    return project.rootProject.extra.safeGet<String>("kspVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kspVersion")\n'),
-              ],
-            }
+          replacements = {
+            'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/gradle/ExpoModuleExtension.kt': [
+              ('import org.gradle.internal.extensions.core.extra\n', ''),
+              ('    return project.rootProject.extra.safeGet<Any>(name) ?: default\n', '    return project.rootProject.extensions.extraProperties.safeGet<Any>(name) ?: default\n'),
+            ],
+            'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ProjectConfiguration.kt': [
+              ('import org.gradle.internal.extensions.core.extra\n', ''),
+              ('  extra.set("kotlinVersion", kotlinVersion)\n', '  project.extensions.extraProperties.set("kotlinVersion", kotlinVersion)\n'),
+              ('  extra.set("kspVersion", kspVersion)\n', '  project.extensions.extraProperties.set("kspVersion", kspVersion)\n'),
+              ('      compileSdk = rootProject.extra.safeGet("compileSdkVersion")\n', '      compileSdk = rootProject.extensions.extraProperties.safeGet("compileSdkVersion")\n'),
+              ('      minSdk = rootProject.extra.safeGet("minSdkVersion")\n', '      minSdk = rootProject.extensions.extraProperties.safeGet("minSdkVersion")\n'),
+              ('      targetSdk = rootProject.extra.safeGet("targetSdkVersion")\n', '      targetSdk = rootProject.extensions.extraProperties.safeGet("targetSdkVersion")\n'),
+            ],
+            'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ExpoModulesGradlePlugin.kt': [
+              ('import org.gradle.internal.extensions.core.extra\n', ''),
+              ('    return project.rootProject.extra.safeGet<String>("kotlinVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kotlinVersion")\n'),
+              ('    return project.rootProject.extra.safeGet<String>("kspVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kspVersion")\n'),
+            ],
+          }
 
-            changed = False
-            for file_path, file_replacements in replacements.items():
-              path = Path(file_path)
-              content = path.read_text()
-              updated_content = content
-              for old, new in file_replacements:
-                updated_content = updated_content.replace(old, new)
-              if updated_content != content:
-                path.write_text(updated_content)
-                changed = True
+          changed = False
+          for file_path, file_replacements in replacements.items():
+            path = Path(file_path)
+            content = path.read_text()
+            updated_content = content
+            for old, new in file_replacements:
+              updated_content = updated_content.replace(old, new)
+            if updated_content != content:
+              path.write_text(updated_content)
+              changed = True
 
-            if changed:
-              print('Patched expo-modules-core Gradle plugin sources for compatibility')
-            else:
-              print('expo-modules-core Gradle plugin sources: pattern not found, skipping patch')
-            EOF
+          if changed:
+            print('Patched expo-modules-core Gradle plugin sources for compatibility')
+          else:
+            print('expo-modules-core Gradle plugin sources: pattern not found, skipping patch')
+          EOF
 
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
