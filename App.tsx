@@ -340,19 +340,15 @@ export default function App() {
   const handleShouldStartLoadWithRequest = useCallback(
     (request: { url: string }) => {
       const { url } = request;
-      // For a better UX (device account chooser), open Google OAuth flows in
-      // the system browser (Chrome) rather than trying to complete them inside
-      // the WebView. The external browser will present the device account
-      // picker and should redirect back to the app when complete.
+      // Allow common Google OAuth hosts to load inside the WebView so the
+      // sign-in flow does not escape to the external browser.
       if (
         url.includes('accounts.google') ||
         url.includes('accounts.youtube') ||
-        url.includes('/o/oauth2') ||
         url.includes('oauth2.googleapis.com') ||
         url.includes('googleusercontent.com')
       ) {
-        Linking.openURL(url).catch(() => {});
-        return false;
+        return true;
       }
       if (
         url.startsWith('mailto:') ||
