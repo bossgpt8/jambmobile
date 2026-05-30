@@ -62,6 +62,27 @@ jobs:
               print('expo-clipboard/android/build.gradle: pattern not found, skipping patch')
           EOF
 
+      - name: Patch expo-modules-autolinking for Gradle compatibility
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
+
+          f = Path('node_modules/expo-modules-autolinking/android/expo-gradle-plugin/expo-autolinking-settings-plugin/src/main/kotlin/expo/modules/plugin/SettingsManager.kt')
+          content = f.read_text()
+          original_import = 'import org.gradle.internal.extensions.core.extra\n'
+          original_usage = '      project.extra.set("coreFeatures", config.coreFeatures)\n'
+          updated_content = content.replace(original_import, '')
+          updated_content = updated_content.replace(
+              original_usage,
+              '      project.extensions.extraProperties.set("coreFeatures", config.coreFeatures)\n',
+          )
+          if updated_content != content:
+              f.write_text(updated_content)
+              print('Patched expo-modules-autolinking SettingsManager.kt for Gradle compatibility')
+          else:
+              print('expo-modules-autolinking SettingsManager.kt: pattern not found, skipping patch')
+          EOF
+
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
 
