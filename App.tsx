@@ -77,6 +77,10 @@ const ALLOWED_HOSTS = [
   'www.jambgenius.app',
   // Google Sign-In / OAuth — match accounts.google.com and any sub-domain
   'google.com',
+  // Google sometimes redirects to accounts.youtube.com during OAuth flows
+  'youtube.com',
+  'accounts.youtube.com',
+  'googleusercontent.com',
   // Firebase auth handler — the OAuth popup redirects back here after sign-in
   'firebaseapp.com',
   // Google APIs used by Firebase Auth (token exchange, identity toolkit, etc.)
@@ -336,6 +340,16 @@ export default function App() {
   const handleShouldStartLoadWithRequest = useCallback(
     (request: { url: string }) => {
       const { url } = request;
+      // Allow common Google OAuth hosts to load inside the WebView so the
+      // sign-in flow does not escape to the external browser.
+      if (
+        url.includes('accounts.google') ||
+        url.includes('accounts.youtube') ||
+        url.includes('oauth2.googleapis.com') ||
+        url.includes('googleusercontent.com')
+      ) {
+        return true;
+      }
       if (
         url.startsWith('mailto:') ||
         url.startsWith('tel:') ||
@@ -591,32 +605,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ExpoStatusBar style="light" backgroundColor={BRAND_COLOR} />
-
-      {/* Header */}
-      <View style={styles.header}>
-        {canGoBack ? (
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={handleGoBack}
-            accessibilityLabel="Go back"
-            accessibilityRole="button"
-          >
-            <Text style={styles.backArrow}>‹</Text>
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.headerSpacer} />
-        )}
-        <Text style={styles.headerTitle}>JambGenius</Text>
-        <TouchableOpacity
-          style={styles.exitButton}
-          onPress={handleExit}
-          accessibilityLabel="Exit app"
-          accessibilityRole="button"
-        >
-          <Text style={styles.exitButtonText}>✕</Text>
-        </TouchableOpacity>
-      </View>
+      <ExpoStatusBar style="dark" backgroundColor="#ffffff" />
 
       {/* Offline banner – shown whenever connectivity is lost; disappears when back online */}
       {!isConnected && (
@@ -739,7 +728,7 @@ function ErrorScreen({ onRetry }: ErrorScreenProps) {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: BRAND_COLOR,
+    backgroundColor: '#ffffff',
   },
   header: {
     height: 52,
