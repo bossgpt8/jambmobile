@@ -94,8 +94,24 @@ jobs:
 
       - name: Pin Gradle wrapper to 8.6 for expo-modules compatibility
         run: |
-          sed -i 's|distributions/gradle-.*-all\.zip|distributions/gradle-8.6-all.zip|g' \
-            android/gradle/wrapper/gradle-wrapper.properties
+          python3 - <<'PYEOF'
+          import re
+          from pathlib import Path
+
+          f = Path('android/gradle/wrapper/gradle-wrapper.properties')
+          content = f.read_text()
+          pattern = r'distributionUrl=https\\://services\.gradle\.org/distributions/gradle-[0-9.]+-(bin|all)\.zip'
+          new_content, count = re.subn(
+              pattern,
+              r'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-\1.zip',
+              content,
+          )
+          if count:
+              f.write_text(new_content)
+              print('Pinned Gradle wrapper to 8.6')
+          else:
+              print('Gradle wrapper URL not found, leaving file unchanged')
+          PYEOF
           grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Write google-services.json
