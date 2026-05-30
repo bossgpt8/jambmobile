@@ -94,14 +94,16 @@ jobs:
           f = Path('android/settings.gradle')
           content = f.read_text()
           import_line = 'import com.facebook.react.ReactSettingsExtension\n'
-          original = 'extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->'
-          updated_content = content
-          if import_line not in updated_content:
-              updated_content = import_line + updated_content
-          updated_content = updated_content.replace(
-              original,
-              'extensions.configure(ReactSettingsExtension) { ex ->',
-          )
+          original_block = '''extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
+  if (System.getenv('EXPO_USE_COMMUNITY_AUTOLINKING') == '1') {
+    ex.autolinkLibrariesFromCommand()
+  } else {
+    ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)
+  }
+}
+'''
+          updated_content = content.replace(import_line, '')
+          updated_content = updated_content.replace(original_block, '')
           if updated_content != content:
               f.write_text(updated_content)
               print('Patched android/settings.gradle for ReactSettingsExtension import')
