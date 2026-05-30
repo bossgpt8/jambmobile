@@ -101,6 +101,9 @@ jobs:
               ('      minSdk = rootProject.extra.safeGet("minSdkVersion")\n', '      minSdk = rootProject.extensions.extraProperties.safeGet("minSdkVersion")\n'),
               ('      targetSdk = rootProject.extra.safeGet("targetSdkVersion")\n', '      targetSdk = rootProject.extensions.extraProperties.safeGet("targetSdkVersion")\n'),
             ],
+            'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/android/AndroidLibraryExtension.kt': [
+              ('    this@defaultConfig.targetSdk = targetSdk\n', ''),
+            ],
             'node_modules/expo-modules-core/expo-module-gradle-plugin/src/main/kotlin/expo/modules/plugin/ExpoModulesGradlePlugin.kt': [
               ('import org.gradle.internal.extensions.core.extra\n', ''),
               ('    return project.rootProject.extra.safeGet<String>("kotlinVersion")\n', '    return project.rootProject.extensions.extraProperties.safeGet<String>("kotlinVersion")\n'),
