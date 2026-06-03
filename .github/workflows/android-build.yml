@@ -153,6 +153,31 @@ jobs:
       - name: Generate native Android project
         run: npx expo prebuild --platform android --no-install --clean
 
+      - name: Patch app/build.gradle for enableBundleCompression compatibility
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
+          import re
+
+          f = Path('android/app/build.gradle')
+          if not f.exists():
+            print(f'File not found: {f}, skipping patch')
+          else:
+            content = f.read_text()
+            # Remove enableBundleCompression property from react extension
+            # This property is not supported in the current React Gradle extension
+            updated_content = re.sub(
+              r'\s*enableBundleCompression\s*=\s*[a-zA-Z_]\w*',
+              '',
+              content
+            )
+            if updated_content != content:
+              f.write_text(updated_content)
+              print('Patched android/app/build.gradle: removed enableBundleCompression property')
+            else:
+              print('android/app/build.gradle: enableBundleCompression property not found, skipping patch')
+          EOF
+
       - name: Patch generated settings.gradle for React settings import
         run: |
           python3 - <<'EOF'
