@@ -76,8 +76,12 @@ jobs:
               ('import org.gradle.internal.extensions.core.extensions\n', ''),
               ('import org.gradle.internal.extensions.core.extra\n', ''),
               ('  extensions.configure', '  project.extensions.configure'),
-              ('    extra.get("', '    project.extensions.extraProperties.get("'),
-              ('    extra.set("', '    project.extensions.extraProperties.set("'),
+              ('rootProject.extra.', 'rootProject.extensions.extraProperties.'),
+              ('project.extra.', 'project.extensions.extraProperties.'),
+              ('      extra.', '      project.extensions.extraProperties.'),
+              ('    extra.', '    project.extensions.extraProperties.'),
+              ('  extra.', '  project.extensions.extraProperties.'),
+              ('extra.', 'project.extensions.extraProperties.'),
             ],
           }
 
