@@ -67,20 +67,38 @@ jobs:
           python3 - <<'EOF'
           from pathlib import Path
 
-          f = Path('node_modules/expo-modules-autolinking/android/expo-gradle-plugin/expo-autolinking-settings-plugin/src/main/kotlin/expo/modules/plugin/SettingsManager.kt')
-          content = f.read_text()
-          original_import = 'import org.gradle.internal.extensions.core.extra\n'
-          original_usage = '      project.extra.set("coreFeatures", config.coreFeatures)\n'
-          updated_content = content.replace(original_import, '')
-          updated_content = updated_content.replace(
-              original_usage,
-              '      project.extensions.extraProperties.set("coreFeatures", config.coreFeatures)\n',
-          )
-          if updated_content != content:
-              f.write_text(updated_content)
-              print('Patched expo-modules-autolinking SettingsManager.kt for Gradle compatibility')
+          replacements = {
+            'node_modules/expo-modules-autolinking/android/expo-gradle-plugin/expo-autolinking-settings-plugin/src/main/kotlin/expo/modules/plugin/SettingsManager.kt': [
+              ('import org.gradle.internal.extensions.core.extra\n', ''),
+              ('      project.extra.set("coreFeatures", config.coreFeatures)\n', '      project.extensions.extraProperties.set("coreFeatures", config.coreFeatures)\n'),
+            ],
+            'node_modules/expo-modules-autolinking/android/expo-gradle-plugin/expo-autolinking-plugin/src/main/kotlin/expo/modules/plugin/ExpoRootProjectPlugin.kt': [
+              ('import org.gradle.internal.extensions.core.extensions\n', ''),
+              ('import org.gradle.internal.extensions.core.extra\n', ''),
+              ('  extensions.configure', '  project.extensions.configure'),
+              ('    extra.get("', '    project.extensions.extraProperties.get("'),
+              ('    extra.set("', '    project.extensions.extraProperties.set("'),
+            ],
+          }
+
+          changed = False
+          for file_path, file_replacements in replacements.items():
+            path = Path(file_path)
+            if not path.exists():
+              print(f'File not found: {file_path}, skipping patch')
+              continue
+            content = path.read_text()
+            updated_content = content
+            for old, new in file_replacements:
+              updated_content = updated_content.replace(old, new)
+            if updated_content != content:
+              path.write_text(updated_content)
+              changed = True
+
+          if changed:
+            print('Patched expo-modules-autolinking Gradle plugin sources for compatibility')
           else:
-              print('expo-modules-autolinking SettingsManager.kt: pattern not found, skipping patch')
+            print('expo-modules-autolinking Gradle plugin sources: pattern not found, skipping patch')
           EOF
 
       - name: Patch expo-modules-core for Gradle compatibility
